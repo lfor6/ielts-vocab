@@ -333,11 +333,17 @@
       updateCountBadge(letter, state.optionCount[letter]);
       clearInterval(state.timer);
 
-      if (letter === state.current.correct_option) state.correctCount += 1;
+      const isRight = letter === state.current.correct_option;
+      if (isRight) state.correctCount += 1;
       state.tryCount += 1;
       renderFeedback();
       submitToLocal(letter);
-      enableNext();
+      if (isRight) {
+        // 答对：短暂展示绿色反馈后自动进入下一题（无需手动点“下一题”）
+        setTimeout(onNext, 650);
+      } else {
+        enableNext();
+      }
     }
 
     function updateCountBadge(letter, count) {
