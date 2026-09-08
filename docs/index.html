@@ -59,14 +59,22 @@
       </div>
     </div>
 
-    <!-- 倒计时圆环 -->
-    <div class="relative w-14 h-14 flex-none" title="剩余时间（秒）">
-      <svg class="w-14 h-14 ring-circle" viewBox="0 0 56 56">
-        <circle cx="28" cy="28" r="24" fill="none" stroke="#f0e4d6" stroke-width="5" />
-        <circle id="ringProgress" cx="28" cy="28" r="24" fill="none" stroke="#c96a5b" stroke-width="5"
-                stroke-linecap="round" stroke-dasharray="150.8" stroke-dashoffset="0" />
-      </svg>
-      <div id="countdown" class="absolute inset-0 flex items-center justify-center text-xl font-bold tabular-nums text-neutral-800">--</div>
+    <!-- 右上角：进度徽标 + 倒计时圆环 -->
+    <div class="flex items-center gap-3 flex-none">
+      <!-- 进度徽标：当前第几个单词 / 全部单词个数 -->
+      <div class="flex items-center gap-1.5 bg-white border border-neutral-200 text-neutral-700 rounded-full px-3.5 py-1.5 text-sm font-semibold tabular-nums shadow-sm" title="当前进度（已学 / 总词数）">
+        <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
+        <span id="progressTop">第 1 / 1 词</span>
+      </div>
+      <!-- 倒计时圆环 -->
+      <div class="relative w-14 h-14 flex-none" title="剩余时间（秒）">
+        <svg class="w-14 h-14 ring-circle" viewBox="0 0 56 56">
+          <circle cx="28" cy="28" r="24" fill="none" stroke="#f0e4d6" stroke-width="5" />
+          <circle id="ringProgress" cx="28" cy="28" r="24" fill="none" stroke="#c96a5b" stroke-width="5"
+                  stroke-linecap="round" stroke-dasharray="150.8" stroke-dashoffset="0" />
+        </svg>
+        <div id="countdown" class="absolute inset-0 flex items-center justify-center text-xl font-bold tabular-nums text-neutral-800">--</div>
+      </div>
     </div>
   </header>
 
@@ -110,6 +118,7 @@
     const QUiZ_SECONDS = 12;            // 每题倒计时（秒）
     const OPTIONS = ['A', 'B', 'C', 'D'];
     const LS_KEY = 'ielts_answers_v1';  // 答题记录存储键
+    const SESSION_KEY = 'ielts_session_v1'; // 答题进度（续接）存储键
 
     // ---------- 状态 ----------
     const state = {
@@ -129,7 +138,7 @@
     // ---------- DOM 引用 ----------
     const $ = (id) => document.getElementById(id);
     const elWord = $('word'), elPhonetic = $('phonetic'), elOptions = $('options');
-    const elProgress = $('progress'), elNext = $('nextBtn'), elLive = $('liveClock');
+    const elProgress = $('progress'), elProgressTop = $('progressTop'), elNext = $('nextBtn'), elLive = $('liveClock');
     const elCountdown = $('countdown'), elRing = $('ringProgress'), elFinished = $('finished');
     const RING_CIRC = 2 * Math.PI * 24;
 
@@ -158,15 +167,56 @@
         elFinished.innerHTML = '<p class="text-neutral-400">题库未加载，请确认 words.js 已随本页一同部署。</p>';
         return;
       }
-      beginSession();
+      beginSession(true);
     }
 
-    function beginSession() {
-      state.queue = state.words.map((w) => w.id).sort(() => Math.random() - 0.5);
-      state.index = 0;
-      state.correctCount = 0;
-      state.tryCount = 0;
-      state.optionCount = { A: 0, B: 0, C: 0, D: 0 };
+    // 读取已持久化的答题进度（跨刷新续接）
+    function loadSession() {
+      try {
+        const s = JSON.parse(localStorage.getItem(SESSION_KEY) || 'null');
+        if (s && Array.isArray(s.queue) && s.queue.length > 0 && s.index < s.queue.length) return s;
+      } catch (e) { /* ignore */ }
+      return null;
+    }
+    // 持久化当前进度（前端 ↔ localStorage 联动同步）
+    function saveSession() {
+      try {
+        localStorage.setItem(SESSION_KEY, JSON.stringify({
+          queue: state.queue,
+          index: state.index,
+          correctCount: state.correctCount,
+          tryCount: state.tryCount,
+          optionCount: state.optionCount,
+          savedAt: new Date().toISOString(),
+        }));
+      } catch (e) { /* ignore */ }
+    }
+    function clearSession() {
+      try { localStorage.removeItem(SESSION_KEY); } catch (e) { /* ignore */ }
+    }
+
+    function beginSession(resume) {
+      let saved = resume ? loadSession() : null;
+      if (saved) {
+        // 仅保留在当前词库中仍存在的单词 id，避免词库更新后断链
+        const valid = saved.queue.filter((id) => state.words.some((w) => w.id === id));
+        if (valid.length === 0) saved = null;
+        else {
+          state.queue = valid;
+          state.index = Math.min(saved.index || 0, valid.length - 1);
+          state.correctCount = saved.correctCount || 0;
+          state.tryCount = saved.tryCount || 0;
+          state.optionCount = saved.optionCount || { A: 0, B: 0, C: 0, D: 0 };
+        }
+      }
+      if (!saved) {
+        state.queue = state.words.map((w) => w.id).sort(() => Math.random() - 0.5);
+        state.index = 0;
+        state.correctCount = 0;
+        state.tryCount = 0;
+        state.optionCount = { A: 0, B: 0, C: 0, D: 0 };
+        clearSession();
+      }
       renderQuestion();
     }
 
@@ -186,6 +236,8 @@
       elPhonetic.textContent = state.current.phonetic;
 
       elProgress.textContent = `第 ${state.index + 1} / ${state.queue.length} 题`;
+      elProgressTop.textContent = `第 ${state.index + 1} / ${state.queue.length} 词`;
+      saveSession();
       elNext.classList.add('hidden');
       elNext.classList.remove('flex');
       elNext.disabled = true;
@@ -225,6 +277,7 @@
     }
 
     function renderFinished() {
+      clearSession(); // 一轮结束，清掉续接进度，下次打开重新开始
       const total = state.tryCount;
       const rate = total === 0 ? 0 : Math.round((state.correctCount / total) * 100);
       elFinished.classList.remove('hidden');
