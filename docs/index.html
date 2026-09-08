@@ -57,6 +57,9 @@
         <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
         <span id="liveClock">--:--:--</span>
       </div>
+      <!-- 词库筛选（按 cet_level：全部 / 雅思 / CET4 / CET6 / 考研 / 托福 / SAT） -->
+      <select id="levelFilter" title="选择词库 / 难度"
+        class="bg-white border border-neutral-200 text-neutral-700 rounded-full px-3 py-1.5 text-sm font-medium shadow-sm hover:bg-neutral-50 cursor-pointer"></select>
     </div>
 
     <!-- 右上角：进度徽标 + 倒计时圆环 -->
@@ -118,6 +121,7 @@
 
   <!-- 词库（前端内嵌，纯静态） -->
   <script src="words.js"></script>
+  <script src="morphemes.js"></script>
 
   <script>
     /* ==========================================================================
@@ -143,6 +147,7 @@
       correctCount: 0,
       tryCount: 0,
       optionCount: { A: 0, B: 0, C: 0, D: 0 },
+      levelFilter: 'ALL',
       startTs: 0,
       timer: null,
     };
@@ -153,6 +158,7 @@
     const elProgress = $('progress'), elProgressTop = $('progressTop'), elNext = $('nextBtn'), elLive = $('liveClock');
     const elCountdown = $('countdown'), elRing = $('ringProgress'), elFinished = $('finished');
     const elSpeakToggle = $('speakToggle'), elReplay = $('replayBtn'), elRootInfo = $('rootInfo');
+    const elLevelFilter = $('levelFilter');
     const RING_CIRC = 2 * Math.PI * 24;
 
     // 自动发音开关（默认开启；记忆用户偏好）
@@ -174,6 +180,20 @@
       arr.push(rec);
       try { localStorage.setItem(LS_KEY, JSON.stringify(arr)); }
       catch (e) { console.error('保存答题记录失败', e); }
+    }
+
+    // 词库筛选：按 cet_level 过滤当前词表
+    function getLevels() {
+      const set = new Set((window.WORDS || []).map((w) => w.cet_level).filter(Boolean));
+      const order = [['ALL', '全部'], ['雅思', '雅思'], ['CET4', '四级 CET4'], ['CET6', '六级 CET6'], ['考研', '考研'], ['托福', '托福'], ['SAT', 'SAT']];
+      const res = [];
+      for (const [v, t] of order) if (v === 'ALL' || set.has(v)) res.push({ v, t });
+      for (const l of set) if (!order.some((o) => o[0] === l)) res.push({ v: l, t: l });
+      return res;
+    }
+    function getFilteredWords() {
+      if (!state.levelFilter || state.levelFilter === 'ALL') return state.words;
+      return state.words.filter((w) => w.cet_level === state.levelFilter);
     }
 
     // 加载词库（内嵌在 words.js 的 window.WORDS）
@@ -199,6 +219,7 @@
     function saveSession() {
       try {
         localStorage.setItem(SESSION_KEY, JSON.stringify({
+          level: state.levelFilter,
           queue: state.queue,
           index: state.index,
           correctCount: state.correctCount,
@@ -214,8 +235,8 @@
 
     function beginSession(resume) {
       let saved = resume ? loadSession() : null;
-      if (saved) {
-        // 仅保留在当前词库中仍存在的单词 id，避免词库更新后断链
+      // 已保存进度的词库筛选与当前不一致 → 放弃续接，按当前筛选重建队列（避免错位）
+      if (saved && saved.level === state.levelFilter) {
         const valid = saved.queue.filter((id) => state.words.some((w) => w.id === id));
         if (valid.length === 0) saved = null;
         else {
@@ -226,8 +247,9 @@
           state.optionCount = saved.optionCount || { A: 0, B: 0, C: 0, D: 0 };
         }
       }
-      if (!saved) {
-        state.queue = state.words.map((w) => w.id).sort(() => Math.random() - 0.5);
+      if (!saved || saved.level !== state.levelFilter) {
+        const list = getFilteredWords();
+        state.queue = list.map((w) => w.id).sort(() => Math.random() - 0.5);
         state.index = 0;
         state.correctCount = 0;
         state.tryCount = 0;
@@ -413,9 +435,12 @@
     }
 
     /* ==========================================================================
-     * 词根词缀 / 词源（连接免费词典 API dictionaryapi.dev，origin 字段即词源/词根词缀渊源）
-     * 仅在答错或超时时展示，帮助记忆
+     * 词根词缀 / 词源
+     * 默认：本地词素分析（morphemes.js，零网络依赖，校园网/受限网络可用）。
+     * 可选：将下方 USE_ONLINE_ETYMOLOGY 改为 true，在网络通畅时叠加 dictionaryapi.dev 在线词源。
+     * 仅在答错或超时时展示，帮助记忆。
      * ========================================================================== */
+    const USE_ONLINE_ETYMOLOGY = false; // 默认关闭 → 纯本地，永远不出现「加载失败」
     function escapeHtml(s) {
       return String(s).replace(/[&<>"']/g, (c) => (
         { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
@@ -444,9 +469,30 @@
       html += '</div>';
       return html;
     }
-    function showRootInfo(word) {
-      elRootInfo.classList.remove('hidden');
-      elRootInfo.innerHTML = '<div class="text-sm text-neutral-400">正在查询词根词缀…</div>';
+    /* 本地词素拆解渲染：将 analyzeMorpheme 的结果渲染为词缀/词根 chip */
+    function renderMorpheme(info) {
+      const order = ['prefix', 'root', 'suffix'];
+      let chips = '';
+      for (const t of order) {
+        const p = info.parts.find((x) => x.type === t);
+        if (!p) continue;
+        chips += '<span class="inline-flex items-center gap-1 rounded-full bg-white border border-indigo-200 px-2.5 py-1 text-xs">'
+          + '<b class="text-indigo-700">' + escapeHtml(p.text) + '</b>'
+          + '<span class="text-neutral-500">' + escapeHtml(p.meaning) + '</span></span>';
+      }
+      let html = '<div class="rounded-2xl bg-indigo-50 border border-indigo-200 px-5 py-4 text-left">';
+      html += '<div class="text-xs font-semibold text-indigo-700 mb-2">词根词缀拆解（本地 · 仅供参考）</div>';
+      html += '<div class="flex flex-wrap gap-2">' + chips + '</div>';
+      if (info.stem && info.stem.length >= 2) {
+        html += '<div class="mt-2 text-xs text-neutral-500">剩余词干：<code class="bg-white px-1 rounded">'
+          + escapeHtml(info.stem) + '</code></div>';
+      }
+      html += '</div>';
+      return html;
+    }
+
+    /* 可选在线词源：仅在 USE_ONLINE_ETYMOLOGY=true 且网络通畅时生效；失败静默，不覆盖本地结果 */
+    function fetchOnlineEtymology(word) {
       const url = 'https://api.dictionaryapi.dev/api/v2/entries/en/' + encodeURIComponent(word);
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), 4000); // 4s 超时，避免卡住
@@ -455,14 +501,29 @@
         .then((data) => {
           clearTimeout(timer);
           if (state.current && state.current.word !== word) return; // 用户已跳到下一题
-          const html = parseRoot(data);
-          elRootInfo.innerHTML = html || '<div class="text-sm text-neutral-400">暂无词根词缀数据</div>';
+          const extra = parseRoot(data);
+          if (!extra) return;
+          // 追加「在线词源」区块，不覆盖本地拆解
+          const block = document.createElement('div');
+          block.className = 'mt-3 rounded-2xl bg-white border border-neutral-200 px-5 py-4 text-left';
+          block.innerHTML = '<div class="text-xs font-semibold text-neutral-600 mb-1">在线词源（dictionaryapi.dev）</div>'
+            + extra.replace(/^<div[^>]*>/, '').replace(/<\/div>\s*$/, '');
+          elRootInfo.appendChild(block);
         })
-        .catch(() => {
-          clearTimeout(timer);
-          if (state.current && state.current.word !== word) return;
-          elRootInfo.innerHTML = '<div class="text-sm text-neutral-400">词源加载失败（可能网络受限）</div>';
-        });
+        .catch(() => { clearTimeout(timer); /* 静默：本地数据已展示 */ });
+    }
+
+    function showRootInfo(word) {
+      elRootInfo.classList.remove('hidden');
+      // 1) 本地词素分析（零网络，必成功）
+      const info = (typeof analyzeMorpheme === 'function') ? analyzeMorpheme(word) : null;
+      if (info) {
+        elRootInfo.innerHTML = renderMorpheme(info);
+      } else {
+        elRootInfo.innerHTML = '<div class="text-sm text-neutral-400">暂无本地构词数据</div>';
+      }
+      // 2) 可选在线词源（默认关闭，避免网络受限时报错）
+      if (USE_ONLINE_ETYMOLOGY) fetchOnlineEtymology(word);
     }
 
     /* ==========================================================================
@@ -523,6 +584,22 @@
       elSpeakToggle.style.display = 'none';
       elReplay.style.display = 'none';
     }
+
+    // 初始化词库筛选下拉（恢复上次筛选偏好；切换即重建队列，避免进度错位）
+    (function initLevelFilter() {
+      const levels = getLevels();
+      elLevelFilter.innerHTML = levels.map((l) => `<option value="${l.v}">${escapeHtml(l.t)}</option>`).join('');
+      const saved = loadSession();
+      if (saved && saved.level && levels.some((l) => l.v === saved.level)) {
+        state.levelFilter = saved.level;
+      }
+      elLevelFilter.value = state.levelFilter;
+      elLevelFilter.addEventListener('change', () => {
+        state.levelFilter = elLevelFilter.value;
+        clearSession();
+        beginSession(false);
+      });
+    })();
 
     loadWords();
   </script>
