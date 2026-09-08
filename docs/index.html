@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>英语词汇抢答 · IELTS</title>
+
+  <!-- Tailwind CSS（Play CDN，单文件方案，需联网加载；如需完全离线可用下方内联样式替代） -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: { sans: ['-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Roboto', 'sans-serif'] },
+        },
+      },
+    };
+  </script>
+
+  <style>
+    /* 全局背景（参考附图暖米色调） */
+    body { background: #faf6f1; }
+
+    /* 字母徽标配色（参考附图：A红/B橙/C绿/D紫）*/
+    .badge-a { background:#c96a5b; } .badge-b { background:#d99a4e; }
+    .badge-c { background:#6fae72; } .badge-d { background:#9b7fc4; }
+
+    /* 选项卡片：默认浅底 + 对应色调描边 */
+    .opt-card  { transition: all .18s ease; cursor:pointer; }
+    .opt-card:active { transform:scale(.985); }
+    .opt-a { background:#fdf3f1; border:1px solid #efccc2; }
+    .opt-b { background:#fdf6ec; border:1px solid #e9d0a8; }
+    .opt-c { background:#f1f8f0; border:1px solid #bcdcbc; }
+    .opt-d { background:#f4f1fb; border:1px solid #d3c7e8; }
+
+    /* 判定态：正确卡片为绿色、错误卡片为红色 */
+    .opt-correct { background:#e6f6e6 !important; border-color:#5cb85c !important; box-shadow:0 0 0 2px rgba(92,184,92,.35); }
+    .opt-wrong   { background:#fdeceb !important; border-color:#d9534f !important; box-shadow:0 0 0 2px rgba(217,83,79,.35); }
+    .opt-dim     { opacity:.45; pointer-events:none; }
+
+    /* 倒计时圆环 */
+    .ring-circle { transform:rotate(-90deg); transform-origin:50% 50%; }
+  </style>
+</head>
+
+<body class="min-h-screen text-neutral-800">
+
+  <!-- ===================== 顶部标签栏 ===================== -->
+  <header class="max-w-3xl mx-auto px-4 pt-5 flex items-center justify-between gap-3">
+    <div class="flex items-center gap-2 flex-1 flex-wrap">
+      <!-- 课程标签 -->
+      <div class="flex items-center gap-2 bg-orange-100/80 text-orange-800 rounded-full px-4 py-1.5 text-sm font-medium">
+        <span class="w-2 h-2 rounded-full bg-orange-500"></span> 英语词汇抢答 · IELTS
+      </div>
+      <!-- 实时时钟 -->
+      <div class="flex items-center gap-1.5 bg-neutral-100 text-neutral-500 rounded-full px-4 py-1.5 text-sm tabular-nums">
+        <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+        <span id="liveClock">--:--:--</span>
+      </div>
+    </div>
+
+    <!-- 倒计时圆环 -->
+    <div class="relative w-14 h-14 flex-none" title="剩余时间（秒）">
+      <svg class="w-14 h-14 ring-circle" viewBox="0 0 56 56">
+        <circle cx="28" cy="28" r="24" fill="none" stroke="#f0e4d6" stroke-width="5" />
+        <circle id="ringProgress" cx="28" cy="28" r="24" fill="none" stroke="#c96a5b" stroke-width="5"
+                stroke-linecap="round" stroke-dasharray="150.8" stroke-dashoffset="0" />
+      </svg>
+      <div id="countdown" class="absolute inset-0 flex items-center justify-center text-xl font-bold tabular-nums text-neutral-800">--</div>
+    </div>
+  </header>
+
+  <!-- ===================== 主区域 ===================== -->
+  <main class="max-w-3xl mx-auto px-4 pt-8 pb-24">
+
+    <!-- 单词展示 -->
+    <section class="text-center">
+      <h1 id="word" class="text-5xl sm:text-6xl font-extrabold tracking-tight text-neutral-900">--</h1>
+      <p id="phonetic" class="mt-3 text-lg text-neutral-400 font-medium">--</p>
+    </section>
+
+    <!-- 选项列表（宽屏 2x2，手机单列） -->
+    <section id="options" class="mt-10 grid grid-cols-1 sm:grid-cols-2 gap-4"></section>
+
+    <!-- 底部：进度 + 下一题 / 结束 -->
+    <div class="mt-10 flex items-center justify-between">
+      <div class="text-sm text-neutral-400">
+        <span id="progress">第 1 / 1 题</span>
+      </div>
+      <button id="nextBtn" disabled
+        class="hidden items-center gap-2 bg-neutral-900 text-white rounded-full px-8 py-3 text-base font-semibold shadow hover:bg-neutral-700 disabled:opacity-40 disabled:cursor-not-allowed">
+        下一题 <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+      </button>
+    </div>
+
+    <!-- 结束面板 -->
+    <div id="finished" class="hidden mt-14 text-center"></div>
+  </main>
+
+  <!-- 词库（前端内嵌，纯静态） -->
+  <script src="words.js"></script>
+
+  <script>
+    /* ==========================================================================
+     * 雅思词汇用户端答题逻辑（纯静态版：词库内嵌 + 答题记录存 localStorage）
+     * ========================================================================== */
+    'use strict';
+
+    // ---------- 常量 ----------
+    const QUiZ_SECONDS = 12;            // 每题倒计时（秒）
+    const OPTIONS = ['A', 'B', 'C', 'D'];
+    const LS_KEY = 'ielts_answers_v1';  // 答题记录存储键
+
+    // ---------- 状态 ----------
+    const state = {
+      words: [],
+      queue: [],
+      index: 0,
+      current: null,
+      answered: false,
+      selected: null,
+      correctCount: 0,
+      tryCount: 0,
+      optionCount: { A: 0, B: 0, C: 0, D: 0 },
+      startTs: 0,
+      timer: null,
+    };
+
+    // ---------- DOM 引用 ----------
+    const $ = (id) => document.getElementById(id);
+    const elWord = $('word'), elPhonetic = $('phonetic'), elOptions = $('options');
+    const elProgress = $('progress'), elNext = $('nextBtn'), elLive = $('liveClock');
+    const elCountdown = $('countdown'), elRing = $('ringProgress'), elFinished = $('finished');
+    const RING_CIRC = 2 * Math.PI * 24;
+
+    /* ==========================================================================
+     * 数据层（纯前端：词库内嵌 + localStorage 记录）
+     * ========================================================================== */
+
+    // 读取本地答题记录
+    function loadAnswers() {
+      try { return JSON.parse(localStorage.getItem(LS_KEY) || '[]'); }
+      catch (e) { return []; }
+    }
+    // 追加一条答题记录
+    function saveAnswer(rec) {
+      const arr = loadAnswers();
+      arr.push(rec);
+      try { localStorage.setItem(LS_KEY, JSON.stringify(arr)); }
+      catch (e) { console.error('保存答题记录失败', e); }
+    }
+
+    // 加载词库（内嵌在 words.js 的 window.WORDS）
+    function loadWords() {
+      state.words = window.WORDS || [];
+      if (state.words.length === 0) {
+        elFinished.classList.remove('hidden');
+        elFinished.innerHTML = '<p class="text-neutral-400">题库未加载，请确认 words.js 已随本页一同部署。</p>';
+        return;
+      }
+      beginSession();
+    }
+
+    function beginSession() {
+      state.queue = state.words.map((w) => w.id).sort(() => Math.random() - 0.5);
+      state.index = 0;
+      state.correctCount = 0;
+      state.tryCount = 0;
+      state.optionCount = { A: 0, B: 0, C: 0, D: 0 };
+      renderQuestion();
+    }
+
+    /* ==========================================================================
+     * 渲染层
+     * ========================================================================== */
+    function updateView() { renderQuestion(); }
+
+    function renderQuestion() {
+      const wordId = state.queue[state.index];
+      state.current = state.words.find((w) => w.id === wordId);
+      state.answered = false;
+      state.selected = null;
+      state.startTs = Date.now();
+
+      elWord.textContent = state.current.word;
+      elPhonetic.textContent = state.current.phonetic;
+
+      elProgress.textContent = `第 ${state.index + 1} / ${state.queue.length} 题`;
+      elNext.classList.add('hidden');
+      elNext.classList.remove('flex');
+      elNext.disabled = true;
+      elFinished.classList.add('hidden');
+
+      elOptions.innerHTML = '';
+      OPTIONS.forEach(function (letter) {
+        const card = document.createElement('button');
+        card.type = 'button';
+        card.className = `opt-card opt-${letter.toLowerCase()} rounded-2xl px-5 py-5 flex items-center gap-4 text-left`;
+        card.dataset.option = letter;
+        card.innerHTML =
+          `<span class="badge-${letter.toLowerCase()} text-white rounded-lg w-9 h-9 flex-none flex items-center justify-center font-bold text-lg">${letter}</span>` +
+          `<span class="flex-1 text-neutral-800 text-lg sm:text-xl font-medium leading-snug">${state.current.options[letter]}</span>` +
+          `<span class="count-badge mx-1 text-neutral-300 bg-white/70 rounded-full w-8 h-8 flex items-center justify-center text-sm tabular-nums">0</span>`;
+        card.addEventListener('click', onOptionClick);
+        elOptions.appendChild(card);
+      });
+
+      startCountdown();
+      renderCount(QUiZ_SECONDS, 1);
+    }
+
+    function renderFeedback() {
+      const cards = elOptions.querySelectorAll('.opt-card');
+      const correct = state.current.correct_option;
+      cards.forEach(function (card) {
+        const letter = card.dataset.option;
+        if (letter === correct) {
+          card.classList.add('opt-correct');
+        } else if (letter === state.selected) {
+          card.classList.add('opt-wrong');
+        } else {
+          card.classList.add('opt-dim');
+        }
+      });
+    }
+
+    function renderFinished() {
+      const total = state.tryCount;
+      const rate = total === 0 ? 0 : Math.round((state.correctCount / total) * 100);
+      elFinished.classList.remove('hidden');
+      elFinished.innerHTML =
+        `<div class="inline-block rounded-3xl bg-white p-8 shadow-sm border border-neutral-100">
+           <h2 class="text-2xl font-bold text-neutral-900">本轮测验完成</h2>
+           <div class="mt-4 flex items-center justify-center gap-6 text-sm text-neutral-500">
+             <div><div class="text-2xl font-bold text-neutral-800">${total}</div>答题数</div>
+             <div><div class="text-2xl font-bold text-green-600">${state.correctCount}</div>答对数</div>
+             <div><div class="text-2xl font-bold text-neutral-800">${rate}%</div>正确率</div>
+           </div>
+           <button onclick="location.reload()" class="mt-6 bg-neutral-900 text-white rounded-full px-8 py-3 text-base font-semibold hover:bg-neutral-700">再来一轮</button>
+         </div>`;
+    }
+
+    /* ==========================================================================
+     * 倒计时
+     * ========================================================================== */
+    function renderCount(secondsLeft, ratio) {
+      elCountdown.textContent = secondsLeft;
+      elRing.style.strokeDasharray = String(RING_CIRC);
+      elRing.style.strokeDashoffset = String(RING_CIRC * (1 - ratio));
+      elRing.setAttribute('stroke', ratio > 0.5 ? '#c96a5b' : ratio > 0.25 ? '#d99a4e' : '#d9534f');
+    }
+
+    function startCountdown() {
+      clearInterval(state.timer);
+      let remaining = QUiZ_SECONDS;
+      state.timer = setInterval(function () {
+        remaining -= 1;
+        if (remaining < 0) { clearInterval(state.timer); onTimeout(); return; }
+        renderCount(remaining, remaining / QUiZ_SECONDS);
+      }, 1000);
+    }
+
+    function onTimeout() {
+      if (state.answered) return;
+      state.answered = true;
+      submitToLocal(null);
+      renderFeedback();
+      enableNext();
+    }
+
+    /* ==========================================================================
+     * 事件处理
+     * ========================================================================== */
+    function onOptionClick(e) {
+      if (state.answered) return;
+      const letter = e.currentTarget.dataset.option;
+      state.answered = true;
+      state.selected = letter;
+      state.optionCount[letter] += 1;
+      updateCountBadge(letter, state.optionCount[letter]);
+      clearInterval(state.timer);
+
+      if (letter === state.current.correct_option) state.correctCount += 1;
+      state.tryCount += 1;
+      renderFeedback();
+      submitToLocal(letter);
+      enableNext();
+    }
+
+    function updateCountBadge(letter, count) {
+      const badge = elOptions.querySelector(`.opt-card[data-option="${letter}"] .count-badge`);
+      if (badge) badge.textContent = count;
+    }
+
+    /* ==========================================================================
+     * 本地存储：记录答题结果（供管理端统计）
+     * ========================================================================== */
+    function submitToLocal(selectedOption) {
+      const responseTime = Date.now() - state.startTs;
+      const isCorrect = selectedOption !== null && selectedOption === state.current.correct_option;
+      saveAnswer({
+        word_id: state.current.id,
+        selected_option: selectedOption,           // null 表示超时未作答
+        is_correct: isCorrect ? 1 : 0,
+        response_time_ms: responseTime,
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    function enableNext() {
+      elNext.disabled = false;
+      elNext.classList.remove('hidden');
+      elNext.classList.add('flex');
+    }
+
+    function onNext() {
+      clearInterval(state.timer);
+      const isLast = state.index >= state.queue.length - 1;
+      if (isLast) { renderFinished(); return; }
+      state.index += 1;
+      renderQuestion();
+    }
+
+    elNext.addEventListener('click', onNext);
+
+    /* ==========================================================================
+     * 顶部实时时钟（北京时间）
+     * ========================================================================== */
+    function tickClock() {
+      const now = new Date();
+      const bj = new Date(now.getTime() + (now.getTimezoneOffset() + 480) * 60000);
+      const pad = (n) => String(n).padStart(2, '0');
+      elLive.textContent = `北京时间 ${pad(bj.getHours())}:${pad(bj.getMinutes())}:${pad(bj.getSeconds())}`;
+    }
+
+    /* ==========================================================================
+     * 启动
+     * ========================================================================== */
+    tickClock();
+    setInterval(tickClock, 1000);
+    loadWords();
+  </script>
+</body>
+</html>

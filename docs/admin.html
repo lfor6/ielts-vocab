@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>词汇错误率统计 · 管理端</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body { background:#faf6f1; }
+    /* 掌握状态标签配色 */
+    .tag-danger  { background:#fdecea; color:#c0392b; }
+    .tag-warn    { background:#fdf3e0; color:#b9770e; }
+    .tag-ok      { background:#e8f7e8; color:#2e8b57; }
+    .tag-none    { background:#f0f0f0; color:#999; }
+    /* 考频标识 */
+    .freq-high { color:#c0392b; } .freq-mid { color:#b9770e; } .freq-low { color:#6b7280; }
+  </style>
+</head>
+<body class="min-h-screen text-neutral-800">
+
+  <div class="max-w-5xl mx-auto px-4 py-8">
+
+    <!-- 标题 -->
+    <div class="flex items-center justify-between flex-wrap gap-3">
+      <div>
+        <h1 class="text-2xl font-bold text-neutral-900">词汇错误率统计 · 管理端</h1>
+        <p class="mt-1 text-sm text-neutral-400">
+          错误率 = 该词错误次数 ÷ 该词总答题次数 × 100%
+          <span class="mx-2 text-neutral-300">|</span>
+          排序：考频(高频&gt;中频&gt;低频) → 错误率(降序) → 最近答题时间(降序)
+          <span class="mx-2 text-neutral-300">|</span>
+          <span id="localNote" class="text-neutral-400">数据来自本机浏览器 localStorage</span>
+        </p>
+      </div>
+      <a href="./" class="text-sm text-neutral-500 hover:text-neutral-800 underline">← 返回答题页</a>
+    </div>
+
+    <!-- 各考频平均错误率柱状图 -->
+    <section class="mt-8 bg-white rounded-2xl p-6 border border-neutral-100 shadow-sm">
+      <h2 class="text-base font-semibold text-neutral-700">各考频区间平均错误率</h2>
+      <div id="chart" class="mt-4 flex items-end justify-around gap-6 h-56"></div>
+    </section>
+
+    <!-- 筛选区 -->
+    <section class="mt-6 bg-white rounded-2xl p-5 border border-neutral-100 shadow-sm">
+      <div class="flex flex-wrap items-end gap-4">
+        <label class="flex flex-col gap-1 text-sm">
+          <span class="text-neutral-400">考频</span>
+          <select id="fFreq" class="border border-neutral-200 rounded-lg px-3 py-2 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-orange-200">
+            <option value="全部">全部</option>
+            <option value="高频">高频</option>
+            <option value="中频">中频</option>
+            <option value="低频">低频</option>
+          </select>
+        </label>
+        <label class="flex flex-col gap-1 text-sm">
+          <span class="text-neutral-400">考试等级</span>
+          <select id="fLevel" class="border border-neutral-200 rounded-lg px-3 py-2 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-orange-200">
+            <option value="全部">全部</option>
+            <option value="CET4">CET4</option>
+            <option value="CET6">CET6</option>
+            <option value="雅思">雅思</option>
+          </select>
+        </label>
+        <label class="flex flex-col gap-1 text-sm">
+          <span class="text-neutral-400">最低错误率 %</span>
+          <input id="fMin" type="number" min="0" max="100" placeholder="0" class="w-24 border border-neutral-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-orange-200" />
+        </label>
+        <label class="flex flex-col gap-1 text-sm">
+          <span class="text-neutral-400">最高错误率 %</span>
+          <input id="fMax" type="number" min="0" max="100" placeholder="100" class="w-24 border border-neutral-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-orange-200" />
+        </label>
+        <button onclick="applyFilter()" class="bg-neutral-900 text-white rounded-lg px-5 py-2 text-sm font-medium hover:bg-neutral-700">筛选</button>
+        <button onclick="resetFilter()" class="border border-neutral-200 rounded-lg px-5 py-2 text-sm text-neutral-500 hover:bg-neutral-50">重置</button>
+        <button onclick="clearAll()" class="border border-red-200 text-red-500 rounded-lg px-5 py-2 text-sm hover:bg-red-50">清空记录</button>
+        <span id="summary" class="ml-auto text-sm text-neutral-400"></span>
+      </div>
+    </section>
+
+    <!-- 词条列表 -->
+    <section id="list" class="mt-6 space-y-3"></section>
+
+    <p id="empty" class="hidden mt-10 text-center text-neutral-400">没有符合条件的记录</p>
+  </div>
+
+  <!-- 词库（前端内嵌，纯静态） -->
+  <script src="words.js"></script>
+
+  <script>
+    /* ==========================================================================
+     * 管理端统计渲染（纯静态版：从 localStorage + 内嵌词库计算统计）
+     * ========================================================================== */
+    'use strict';
+    const $ = (id) => document.getElementById(id);
+    const LS_KEY = 'ielts_answers_v1';
+
+    const masteryClass = {
+      '已掌握': 'tag-ok', '需复习': 'tag-warn', '高危': 'tag-danger', '未学习': 'tag-none',
+    };
+    const freqClass = { '高频': 'freq-high', '中频': 'freq-mid', '低频': 'freq-low' };
+
+    // 读取本地答题记录
+    function loadAnswers() {
+      try { return JSON.parse(localStorage.getItem(LS_KEY) || '[]'); }
+      catch (e) { return []; }
+    }
+
+    // 词库索引
+    const WORD_MAP = {};
+    (window.WORDS || []).forEach((w) => { WORD_MAP[w.id] = w; });
+
+    /* ---------- 各考频柱状图 ---------- */
+    function computeFreqChart() {
+      const answers = loadAnswers();
+      const agg = {}; // freq -> {total, wrong}
+      for (const a of answers) {
+        const w = WORD_MAP[a.word_id];
+        if (!w) continue;
+        const f = w.frequency_tag;
+        if (!agg[f]) agg[f] = { total: 0, wrong: 0 };
+        agg[f].total += 1;
+        if (a.is_correct !== 1) agg[f].wrong += 1;
+      }
+      const order = ['高频', '中频', '低频'];
+      return order.map((f) => {
+        const d = agg[f] || { total: 0, wrong: 0 };
+        return {
+          frequency_tag: f,
+          total_attempts: d.total,
+          avg_error_rate: d.total === 0 ? 0 : Math.round((d.wrong / d.total) * 1000) / 10,
+        };
+      });
+    }
+
+    function renderChart(data) {
+      const chart = $('chart');
+      if (!data || data.length === 0) { chart.innerHTML = '<p class="text-neutral-400">暂无数据</p>'; return; }
+      const MAX_H = 160;
+      const maxRate = Math.max(100, ...data.map((d) => d.avg_error_rate));
+      const html = data.map((d) => {
+        const h = Math.round((d.avg_error_rate / maxRate) * MAX_H);
+        const color = d.frequency_tag === '高频' ? '#c0392b' : d.frequency_tag === '中频' ? '#d99a4e' : '#6b7280';
+        return `
+          <div class="flex flex-col items-center justify-end h-full w-1/4">
+            <div class="text-sm font-semibold tabular-nums mb-2">${d.avg_error_rate}%</div>
+            <div class="w-16 sm:w-20 rounded-t-lg" style="height:${h}px;background:${color}"></div>
+            <div class="mt-2 text-neutral-500 text-sm">${d.frequency_tag}</div>
+            <div class="text-neutral-400 text-xs">${d.total_attempts} 次作答</div>
+          </div>`;
+      }).join('');
+      chart.innerHTML = html;
+    }
+
+    /* ---------- 计算全部统计（复刻后端聚合逻辑） ---------- */
+    function computeStats(filters) {
+      const answers = loadAnswers();
+      const byId = {}; // word_id -> {total, wrong, last, mistakes}
+      for (const a of answers) {
+        const id = a.word_id;
+        if (!byId[id]) byId[id] = { total: 0, wrong: 0, last: null, mistakes: {} };
+        byId[id].total += 1;
+        if (a.is_correct !== 1) {
+          byId[id].wrong += 1;
+          const opt = a.selected_option;
+          if (opt) byId[id].mistakes[opt] = (byId[id].mistakes[opt] || 0) + 1;
+        }
+        if (!byId[id].last || a.timestamp > byId[id].last) byId[id].last = a.timestamp;
+      }
+
+      const stats = (window.WORDS || []).map((w) => {
+        const agg = byId[w.id] || { total: 0, wrong: 0, last: null, mistakes: {} };
+        const total = agg.total;
+        const wrong = agg.wrong;
+        const errorRate = total === 0 ? 0 : (wrong / total) * 100;
+        let top = null, maxc = 0;
+        for (const [opt, c] of Object.entries(agg.mistakes)) {
+          if (c > maxc) { maxc = c; top = { option: opt, count: c }; }
+        }
+        let mastery = '未学习';
+        if (total > 0) {
+          if (errorRate === 0) mastery = '已掌握';
+          else if (errorRate >= 50) mastery = '高危';
+          else mastery = '需复习';
+        }
+        return {
+          id: w.id, word: w.word, phonetic: w.phonetic,
+          correct_answer: w.correct_option, options: w.options,
+          frequency_tag: w.frequency_tag, cet_level: w.cet_level,
+          total_attempts: total, wrong_count: wrong,
+          error_rate: Math.round(errorRate * 100) / 100,
+          top_mistake: top, last_time: agg.last, mastery,
+        };
+      });
+
+      // 三级排序：考频 → 错误率降序 → 最近时间降序
+      const freqPriority = { '高频': 0, '中频': 1, '低频': 2 };
+      stats.sort((a, b) => {
+        const f = freqPriority[a.frequency_tag] - freqPriority[b.frequency_tag];
+        if (f !== 0) return f;
+        if (b.error_rate !== a.error_rate) return b.error_rate - a.error_rate;
+        const ta = a.last_time ? new Date(a.last_time).getTime() : -Infinity;
+        const tb = b.last_time ? new Date(b.last_time).getTime() : -Infinity;
+        return tb - ta;
+      });
+
+      // 筛选
+      let result = stats;
+      if (filters.frequency_tag && filters.frequency_tag !== '全部')
+        result = result.filter((s) => s.frequency_tag === filters.frequency_tag);
+      if (filters.cet_level && filters.cet_level !== '全部')
+        result = result.filter((s) => s.cet_level === filters.cet_level);
+      if (filters.min_err !== '' && filters.min_err != null)
+        result = result.filter((s) => s.error_rate >= Number(filters.min_err));
+      if (filters.max_err !== '' && filters.max_err != null)
+        result = result.filter((s) => s.error_rate <= Number(filters.max_err));
+      return result;
+    }
+
+    /* ---------- 词条列表 ---------- */
+    function renderList(rows) {
+      const list = $('list');
+      const empty = $('empty');
+      if (!rows || rows.length === 0) { list.innerHTML = ''; empty.classList.remove('hidden'); return; }
+      empty.classList.add('hidden');
+
+      const maxRate = Math.max(1, ...rows.map((r) => r.error_rate));
+      list.innerHTML = rows.map((r) => {
+        const top = r.top_mistake
+          ? `主要错选 <b>${r.top_mistake.option}</b>：「${r.options[r.top_mistake.option]}」(${r.top_mistake.count} 次)`
+          : '暂无错选记录';
+        const barWidth = r.total_attempts === 0 ? 0 : Math.max(3, (r.error_rate / maxRate) * 100);
+        const lastTime = r.last_time ? new Date(r.last_time).toLocaleString('zh-CN') : '从未作答';
+        return `
+        <div class="bg-white rounded-2xl p-5 border border-neutral-100 shadow-sm">
+          <div class="flex items-start justify-between gap-4 flex-wrap">
+            <div class="flex-1 min-w-[220px]">
+              <div class="flex items-center gap-3 flex-wrap">
+                <span class="text-xl font-bold text-neutral-900">${r.word}</span>
+                <span class="text-neutral-400 text-sm">${r.phonetic}</span>
+                <span class="text-xs px-2 py-0.5 rounded-full bg-neutral-100 text-neutral-500">${r.cet_level}</span>
+                <span class="text-xs px-2 py-0.5 rounded-full bg-neutral-50 ${freqClass[r.frequency_tag] || ''}">${r.frequency_tag}</span>
+              </div>
+              <div class="mt-2 text-neutral-500 text-sm">正确释义：<span class="text-neutral-800 font-medium">${r.options[r.correct_answer]}</span></div>
+              <div class="mt-1 text-neutral-500 text-sm">${top}</div>
+            </div>
+            <div class="text-right flex-none">
+              <span class="text-xs px-2.5 py-1 rounded-full font-medium ${masteryClass[r.mastery] || 'tag-none'}">${r.mastery}</span>
+              <div class="mt-2 text-sm text-neutral-500">
+                总分 <b class="text-neutral-800">${r.total_attempts}</b> 次 /
+                错误 <b class="text-red-500">${r.wrong_count}</b> 次 /
+                <b class="text-red-600">${r.error_rate}%</b>
+              </div>
+              <div class="mt-1 text-xs text-neutral-400">最近答题：${lastTime}</div>
+            </div>
+          </div>
+          <div class="mt-4 h-2 rounded-full bg-neutral-100 overflow-hidden">
+            <div class="h-full rounded-full ${r.error_rate >= 50 ? 'bg-red-500' : r.error_rate > 0 ? 'bg-amber-400' : 'bg-green-500'}"
+                 style="width:${barWidth}%"></div>
+          </div>
+        </div>`;
+      }).join('');
+    }
+
+    /* ---------- 读取并渲染 ---------- */
+    let chartLoaded = false;
+    function loadStats() {
+      const filters = {
+        frequency_tag: $('fFreq').value,
+        cet_level: $('fLevel').value,
+        min_err: $('fMin').value || '',
+        max_err: $('fMax').value || '',
+      };
+      const rows = computeStats(filters);
+      renderList(rows);
+      $('summary').textContent = `共 ${rows.length} 条`;
+
+      if (!chartLoaded) {
+        renderChart(computeFreqChart());
+        chartLoaded = true;
+      }
+    }
+
+    function applyFilter() { loadStats(); }
+    function resetFilter() {
+      $('fFreq').value = '全部'; $('fLevel').value = '全部';
+      $('fMin').value = ''; $('fMax').value = '';
+      loadStats();
+    }
+    function clearAll() {
+      if (!confirm('确认清空本机全部答题记录？此操作不可恢复。')) return;
+      localStorage.removeItem(LS_KEY);
+      chartLoaded = false;
+      loadStats();
+    }
+
+    ['fFreq', 'fLevel', 'fMin', 'fMax'].forEach((id) => {
+      $(id).addEventListener('change', applyFilter);
+    });
+
+    loadStats();
+  </script>
+</body>
+</html>
