@@ -37,7 +37,7 @@
 
     <!-- 概览：错误总个数 / 答题总数 / 整体错误率（随筛选实时更新） -->
     <section class="mt-6 bg-white rounded-2xl p-5 border border-neutral-100 shadow-sm">
-      <div class="grid grid-cols-3 gap-4 text-center">
+      <div class="grid grid-cols-4 gap-4 text-center">
         <div>
           <div class="text-2xl font-bold text-neutral-900 tabular-nums" id="totalAttempts">0</div>
           <div class="mt-1 text-sm text-neutral-400">答题总数</div>
@@ -45,6 +45,10 @@
         <div>
           <div class="text-2xl font-bold text-red-500 tabular-nums" id="totalWrong">0</div>
           <div class="mt-1 text-sm text-neutral-400">错误总个数</div>
+        </div>
+        <div>
+          <div class="text-2xl font-bold text-rose-600 tabular-nums" id="wrongWords">0</div>
+          <div class="mt-1 text-sm text-neutral-400">错误总单词个数</div>
         </div>
         <div>
           <div class="text-2xl font-bold text-amber-600 tabular-nums" id="overallRate">0%</div>
@@ -285,9 +289,12 @@
       // 概览：错误总个数等（随筛选实时更新）
       const totalAttempts = rows.reduce((s, r) => s + r.total_attempts, 0);
       const totalWrong = rows.reduce((s, r) => s + r.wrong_count, 0);
+      // 错误总单词个数：当前筛选范围内「至少答错过一次」的不重复单词数
+      const wrongWords = rows.filter((r) => r.wrong_count > 0).length;
       const overallRate = totalAttempts === 0 ? 0 : Math.round((totalWrong / totalAttempts) * 1000) / 10;
       $('totalAttempts').textContent = totalAttempts;
       $('totalWrong').textContent = totalWrong;
+      $('wrongWords').textContent = wrongWords;
       $('overallRate').textContent = overallRate + '%';
 
       if (!chartLoaded) {
