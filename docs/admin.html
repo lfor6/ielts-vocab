@@ -46,21 +46,11 @@
       <div class="flex flex-wrap items-end gap-4">
         <label class="flex flex-col gap-1 text-sm">
           <span class="text-neutral-400">考频</span>
-          <select id="fFreq" class="border border-neutral-200 rounded-lg px-3 py-2 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-orange-200">
-            <option value="全部">全部</option>
-            <option value="高频">高频</option>
-            <option value="中频">中频</option>
-            <option value="低频">低频</option>
-          </select>
+          <select id="fFreq" class="border border-neutral-200 rounded-lg px-3 py-2 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-orange-200"></select>
         </label>
         <label class="flex flex-col gap-1 text-sm">
           <span class="text-neutral-400">考试等级</span>
-          <select id="fLevel" class="border border-neutral-200 rounded-lg px-3 py-2 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-orange-200">
-            <option value="全部">全部</option>
-            <option value="CET4">CET4</option>
-            <option value="CET6">CET6</option>
-            <option value="雅思">雅思</option>
-          </select>
+          <select id="fLevel" class="border border-neutral-200 rounded-lg px-3 py-2 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-orange-200"></select>
         </label>
         <label class="flex flex-col gap-1 text-sm">
           <span class="text-neutral-400">最低错误率 %</span>
@@ -205,8 +195,8 @@
 
       // 筛选
       let result = stats;
-      if (filters.frequency_tag && filters.frequency_tag !== '全部')
-        result = result.filter((s) => s.frequency_tag === filters.frequency_tag);
+      if (filters.frequency_tag)
+        result = result.filter((s) => (s.frequency_tag || '') === (filters.frequency_tag === '未分级' ? '' : filters.frequency_tag));
       if (filters.cet_level && filters.cet_level !== '全部')
         result = result.filter((s) => s.cet_level === filters.cet_level);
       if (filters.min_err !== '' && filters.min_err != null)
@@ -282,7 +272,7 @@
 
     function applyFilter() { loadStats(); }
     function resetFilter() {
-      $('fFreq').value = '全部'; $('fLevel').value = '全部';
+      $('fFreq').value = ''; $('fLevel').value = '';
       $('fMin').value = ''; $('fMax').value = '';
       loadStats();
     }
@@ -296,6 +286,29 @@
     ['fFreq', 'fLevel', 'fMin', 'fMax'].forEach((id) => {
       $(id).addEventListener('change', applyFilter);
     });
+
+    // 动态生成筛选选项：覆盖全部词库等级 / 考频（含新接入的考研/托福/SAT 与未分级新词）
+    function getLevelOptions() {
+      const set = new Set((window.WORDS || []).map((w) => w.cet_level).filter(Boolean));
+      const order = [['', '全部'], ['雅思', '雅思'], ['CET4', '四级 CET4'], ['CET6', '六级 CET6'], ['考研', '考研'], ['托福', '托福'], ['SAT', 'SAT']];
+      const res = [];
+      for (const [v, t] of order) if (v === '' || set.has(v)) res.push({ v, t });
+      for (const l of set) if (!order.some((o) => o[0] === l)) res.push({ v: l, t: l });
+      return res;
+    }
+    function getFreqOptions() {
+      const set = new Set((window.WORDS || []).map((w) => w.frequency_tag || '').filter(Boolean));
+      const order = [['', '未分级'], ['高频', '高频'], ['中频', '中频'], ['低频', '低频']];
+      const res = [];
+      for (const [v, t] of order) if (v === '' || set.has(v)) res.push({ v, t });
+      for (const f of set) if (!order.some((o) => o[0] === f)) res.push({ v: f, t: f });
+      return res;
+    }
+    function initFilters() {
+      $('fLevel').innerHTML = getLevelOptions().map((o) => `<option value="${o.v}">${o.t}</option>`).join('');
+      $('fFreq').innerHTML = getFreqOptions().map((o) => `<option value="${o.v}">${o.t}</option>`).join('');
+    }
+    initFilters();
 
     loadStats();
   </script>
