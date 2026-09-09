@@ -127,6 +127,10 @@
   <!-- 词库（前端内嵌，纯静态） -->
   <script src="words.js"></script>
   <script src="morphemes.js"></script>
+  <!-- Supabase 云同步（跨设备一致）：CDN + 配置 + 同步客户端；ENABLED=false 时完全不生效 -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="supabase-config.js"></script>
+  <script src="supabase-sync.js"></script>
 
   <script>
     /* ==========================================================================
@@ -537,13 +541,17 @@
     function submitToLocal(selectedOption) {
       const responseTime = Date.now() - state.startTs;
       const isCorrect = selectedOption !== null && selectedOption === state.current.correct_option;
-      saveAnswer({
+      const rec = {
         word_id: state.current.id,
         selected_option: selectedOption,           // null 表示超时未作答
         is_correct: isCorrect ? 1 : 0,
         response_time_ms: responseTime,
         timestamp: new Date().toISOString(),
-      });
+      };
+      saveAnswer(rec);                            // 本地即时写入（离线可用）
+      if (window.SupabaseSync && window.SupabaseSync.isOn()) {
+        window.SupabaseSync.pushAnswer(rec);       // 异步同步云端（失败静默，已留本地）
+      }
     }
 
     function enableNext() {

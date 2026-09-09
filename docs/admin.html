@@ -85,7 +85,9 @@
         <button onclick="applyFilter()" class="bg-neutral-900 text-white rounded-lg px-5 py-2 text-sm font-medium hover:bg-neutral-700">筛选</button>
         <button onclick="resetFilter()" class="border border-neutral-200 rounded-lg px-5 py-2 text-sm text-neutral-500 hover:bg-neutral-50">重置</button>
         <button onclick="clearAll()" class="border border-red-200 text-red-500 rounded-lg px-5 py-2 text-sm hover:bg-red-50">清空记录</button>
-        <span id="summary" class="ml-auto text-sm text-neutral-400"></span>
+        <button onclick="syncLocalToCloud()" class="border border-emerald-200 text-emerald-600 rounded-lg px-5 py-2 text-sm hover:bg-emerald-50">同步本地到云端</button>
+        <span id="syncStatus" class="ml-auto text-sm text-neutral-400">数据来源：💾 本地</span>
+        <span id="summary" class="text-sm text-neutral-400"></span>
       </div>
     </section>
 
@@ -97,6 +99,10 @@
 
   <!-- 词库（前端内嵌，纯静态） -->
   <script src="words.js"></script>
+  <!-- Supabase 云同步（跨设备一致）：CDN + 配置 + 同步客户端；ENABLED=false 时完全不生效 -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="supabase-config.js"></script>
+  <script src="supabase-sync.js"></script>
 
   <script>
     /* ==========================================================================
@@ -122,8 +128,7 @@
     (window.WORDS || []).forEach((w) => { WORD_MAP[w.id] = w; });
 
     /* ---------- 各考频柱状图 ---------- */
-    function computeFreqChart() {
-      const answers = loadAnswers();
+    function computeFreqChart(answers) {
       const agg = {}; // freq -> {total, wrong}
       for (const a of answers) {
         const w = WORD_MAP[a.word_id];
@@ -164,8 +169,7 @@
     }
 
     /* ---------- 计算全部统计（复刻后端聚合逻辑） ---------- */
-    function computeStats(filters) {
-      const answers = loadAnswers();
+    function computeStats(filters, answers) {
       const byId = {}; // word_id -> {total, wrong, last, mistakes}
       for (const a of answers) {
         const id = a.word_id;
@@ -275,14 +279,41 @@
 
     /* ---------- 读取并渲染 ---------- */
     let chartLoaded = false;
-    function loadStats() {
+    function setSyncStatus(source) {
+      const el = $('syncStatus');
+      if (!el) return;
+      if (source === '云端') {
+        el.textContent = '数据来源：☁ 云端';
+        el.className = 'ml-auto text-sm text-emerald-600 font-medium';
+      } else {
+        el.textContent = '数据来源：💾 本地';
+        el.className = 'ml-auto text-sm text-neutral-400';
+      }
+    }
+
+    async function loadStats() {
       const filters = {
         frequency_tag: $('fFreq').value,
         cet_level: $('fLevel').value,
         min_err: $('fMin').value || '',
         max_err: $('fMax').value || '',
       };
-      const rows = computeStats(filters);
+      // 数据源：优先云端（跨设备一致），拉取失败则回退本地（离线可用）
+      let answers = null;
+      let source = '本地';
+      if (window.SupabaseSync && window.SupabaseSync.isOn()) {
+        answers = await window.SupabaseSync.pullAnswers();
+      }
+      if (answers === null) {
+        answers = loadAnswers();
+      } else {
+        source = '云端';
+        // 云端拉到后顺手写回本地，作为离线缓存
+        try { localStorage.setItem(LS_KEY, JSON.stringify(answers)); } catch (e) { /* ignore */ }
+      }
+      setSyncStatus(source);
+
+      const rows = computeStats(filters, answers);
       renderList(rows);
       $('summary').textContent = `共 ${rows.length} 条`;
 
@@ -298,8 +329,25 @@
       $('overallRate').textContent = overallRate + '%';
 
       if (!chartLoaded) {
-        renderChart(computeFreqChart());
+        renderChart(computeFreqChart(answers));
         chartLoaded = true;
+      }
+    }
+
+    // 一键把本地答题记录上传到云端（首次启用云端或换设备时用到）
+    async function syncLocalToCloud() {
+      if (!window.SupabaseSync || !window.SupabaseSync.isOn()) {
+        alert('云端同步未启用：请在 supabase-config.js 填入 Project URL / anon key，并将 ENABLED 改为 true 后重新推送。');
+        return;
+      }
+      const local = loadAnswers();
+      if (!local.length) { alert('本地暂无答题记录，无需同步。'); return; }
+      try {
+        const n = await window.SupabaseSync.pushMany(local);
+        alert(`已将 ${n} 条本地记录同步到云端，统计将基于云端（跨设备一致）。`);
+        await loadStats();
+      } catch (e) {
+        alert('同步失败：' + (e && e.message ? e.message : e));
       }
     }
 
