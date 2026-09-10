@@ -14,8 +14,8 @@
  *    应改用 Supabase Auth（匿名登录）按 user_id 隔离数据。
  * ========================================================================== */
 window.SUPABASE_CONFIG = {
-  URL: 'YOUR_SUPABASE_URL',            // ← 替换为你的 Project URL
-  ANON_KEY: 'YOUR_SUPABASE_ANON_KEY',  // ← 替换为你的 anon public key
-  ENABLED: false,                      // ← 填入真实 URL/key 后改为 true
+  URL: 'https://nwlybfildnbryvjoguxg.supabase.co',
+  ANON_KEY: 'sb_publishable_uQB3OF9jy5Un037-IAlajQ_okvlxiPM',
+  ENABLED: true,                       // 已填入真实 URL/key，云端同步开启
   TABLE: 'answers',                    // 云端答题记录表名（与 schema.sql 一致）
 };
