@@ -57,6 +57,30 @@
       </div>
     </section>
 
+    <!-- 掌握度概览（复习调度管家 / SM-2 遗忘曲线） -->
+    <section class="mt-6 bg-white rounded-2xl p-5 border border-neutral-100 shadow-sm">
+      <h2 class="text-base font-semibold text-neutral-700 mb-3">📊 掌握度概览（遗忘曲线）</h2>
+      <div class="grid grid-cols-4 gap-4 text-center">
+        <div>
+          <div class="text-2xl font-bold text-green-600 tabular-nums" id="mMastered">0</div>
+          <div class="mt-1 text-sm text-neutral-400">已掌握 (Lv≥4)</div>
+        </div>
+        <div>
+          <div class="text-2xl font-bold text-amber-600 tabular-nums" id="mLearning">0</div>
+          <div class="mt-1 text-sm text-neutral-400">学习中 (Lv1-3)</div>
+        </div>
+        <div>
+          <div class="text-2xl font-bold text-neutral-400 tabular-nums" id="mNew">0</div>
+          <div class="mt-1 text-sm text-neutral-400">新词 (未学)</div>
+        </div>
+        <div>
+          <div class="text-2xl font-bold text-rose-600 tabular-nums" id="mDue">0</div>
+          <div class="mt-1 text-sm text-neutral-400">今日待复习</div>
+        </div>
+      </div>
+      <div class="mt-3 text-sm text-neutral-400 text-center">平均掌握等级：<span id="mAvg" class="text-neutral-700 font-medium">0.0</span> / 5 ｜ 已学词：<span id="mStudied" class="text-neutral-700 font-medium">0</span> / <span id="mTotal" class="text-neutral-700 font-medium">0</span></div>
+    </section>
+
     <!-- 错题本（留存）：每次答错/超时的词自动留存于此，可逐条移除或整体清空 -->
     <section class="mt-6 bg-white rounded-2xl p-5 border border-neutral-100 shadow-sm">
       <div class="flex items-center justify-between flex-wrap gap-2">
@@ -123,6 +147,7 @@
     'use strict';
     const $ = (id) => document.getElementById(id);
     const LS_KEY = 'ielts_answers_v1';
+    const MASTERY_KEY = 'ielts_mastery_v1'; // 掌握度（SM-2）本地存储键
 
     const masteryClass = {
       '已掌握': 'tag-ok', '需复习': 'tag-warn', '高危': 'tag-danger', '未学习': 'tag-none',
@@ -191,6 +216,41 @@
       if (!confirm('确认清空错题本？已留存的所有错题将被移除（不影响答题统计）。')) return;
       localStorage.removeItem(WRONG_KEY);
       renderWrongBook();
+    }
+
+    // 掌握度（SM-2）本地读写
+    function loadMastery() {
+      try { return JSON.parse(localStorage.getItem(MASTERY_KEY) || '{}'); }
+      catch (e) { return {}; }
+    }
+    // 掌握度概览：优先云端 mastery，拉取失败回退本地
+    async function renderMasteryStats() {
+      let map = null;
+      if (window.SupabaseSync && window.SupabaseSync.isOn()) {
+        map = await window.SupabaseSync.pullMastery();
+      }
+      if (!map) map = loadMastery();
+      const words = window.WORDS || [];
+      const total = words.length;
+      let mastered = 0, learning = 0, newc = 0, due = 0, studied = 0, levelSum = 0;
+      const now = Date.now();
+      for (const w of words) {
+        const m = map[String(w.id)];
+        if (!m || m.level === 0) newc += 1;
+        else {
+          studied += 1;
+          levelSum += m.level;
+          if (m.level >= 4) mastered += 1; else learning += 1;
+        }
+        if (!m || new Date(m.due_at).getTime() <= now) due += 1; // 新词或已到期 → 今日待复习
+      }
+      $('mMastered').textContent = mastered;
+      $('mLearning').textContent = learning;
+      $('mNew').textContent = newc;
+      $('mDue').textContent = due;
+      $('mAvg').textContent = (studied === 0 ? 0 : (levelSum / studied)).toFixed(1);
+      $('mStudied').textContent = studied;
+      $('mTotal').textContent = total;
     }
 
     // 词库索引
@@ -462,6 +522,7 @@
     initFilters();
 
     renderWrongBook(); // 错题本（留存）清单
+    renderMasteryStats(); // 掌握度概览（优先云端，回退本地）
     loadStats();
   </script>
 </body>

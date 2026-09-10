@@ -66,6 +66,12 @@
         📕 复习错题
         <span id="wrongCountBadge" class="hidden bg-rose-600 text-white rounded-full px-1.5 text-xs tabular-nums">0</span>
       </button>
+      <!-- 今日复习：按遗忘曲线排期，只刷今天该复习的词 -->
+      <button id="reviewDueBtn" type="button" title="按遗忘曲线排期，今天该复习的词"
+        class="flex-none inline-flex items-center gap-1.5 bg-amber-50 border border-amber-200 text-amber-700 rounded-full px-3.5 py-1.5 text-sm font-medium shadow-sm hover:bg-amber-100 active:scale-95 transition">
+        📅 今日复习
+        <span id="dueCountBadge" class="hidden bg-amber-600 text-white rounded-full px-1.5 text-xs tabular-nums">0</span>
+      </button>
     </div>
 
     <!-- 右上角：进度徽标 + 倒计时圆环 -->
@@ -105,6 +111,8 @@
     <section class="text-center">
       <h1 id="word" class="text-5xl sm:text-6xl font-extrabold tracking-tight text-neutral-900">--</h1>
       <p id="phonetic" class="mt-3 text-lg text-neutral-400 font-medium">--</p>
+      <!-- 掌握度提示（SM-2 等级 / 间隔） -->
+      <p id="masteryHint" class="mt-2 text-xs text-amber-500 font-medium hidden"></p>
       <!-- 手动重播美音 -->
       <button id="replayBtn" type="button"
         class="mt-4 inline-flex items-center gap-1.5 bg-amber-100 text-amber-800 rounded-full px-4 py-1.5 text-sm font-medium hover:bg-amber-200 active:scale-95 transition">
@@ -161,6 +169,8 @@
     const WRONG_KEY = 'ielts_wrong_v1'; // 错题本（留存）存储键：答错/超时的词永久留存于此，供复习
     const SESSION_KEY = 'ielts_session_v1'; // 答题进度（续接）存储键
     const AUTO_SPEAK_KEY = 'ielts_auto_speak_v1'; // 自动发音开关偏好
+    const MASTERY_KEY = 'ielts_mastery_v1';       // 掌握度（SM-2 遗忘曲线）本地存储键
+    const REVIEW_LIMIT = 40;                       // 每轮「今日复习」最大词数（按紧急度取前 N）
 
     // ---------- 状态 ----------
     const state = {
@@ -175,6 +185,7 @@
       optionCount: { A: 0, B: 0, C: 0, D: 0 },
       levelFilter: 'ALL',
       reviewWrong: false,   // 是否进入「复习错题」模式（仅刷错题本里的词）
+      reviewDue: false,     // 是否进入「今日复习」模式（按遗忘曲线排期，仅刷到期的词）
       startTs: 0,
       timer: null,
     };
@@ -188,6 +199,9 @@
     const elLevelFilter = $('levelFilter');
     const elReviewWrong = $('reviewWrongBtn');
     const elWrongBadge = $('wrongCountBadge');
+    const elReviewDue = $('reviewDueBtn');
+    const elDueBadge = $('dueCountBadge');
+    const elMasteryHint = $('masteryHint');
     const elReviewBanner = $('reviewBanner');
     const elMasterBtn = $('masterBtn');
     const RING_CIRC = 2 * Math.PI * 24;
@@ -277,6 +291,90 @@
       return list;
     }
 
+    // ---------- 掌握度（SM-2 遗忘曲线）----------
+    // 以 word_id 为键的对象：{ word_id, level 0~5, ease, interval_days,
+    //   due_at, last_reviewed, review_count, correct_streak, wrong_streak }
+    function loadMastery() {
+      try { return JSON.parse(localStorage.getItem(MASTERY_KEY) || '{}'); }
+      catch (e) { return {}; }
+    }
+    function saveMasteryMap(map) {
+      try { localStorage.setItem(MASTERY_KEY, JSON.stringify(map)); }
+      catch (e) { console.error('保存掌握度失败', e); }
+    }
+    function getMastery(wordId) {
+      return loadMastery()[String(wordId)] || null;
+    }
+    // 新词（无记录）视为立即到期
+    function isDue(wordId) {
+      const m = getMastery(wordId);
+      if (!m) return true;
+      return new Date(m.due_at).getTime() <= Date.now();
+    }
+    // 默认掌握度（新词：立即到期，便于今天纳入复习）
+    function defaultMastery(wordId) {
+      return {
+        word_id: wordId, level: 0, ease: 2.5, interval_days: 0,
+        due_at: new Date(0).toISOString(), last_reviewed: null,
+        review_count: 0, correct_streak: 0, wrong_streak: 0,
+      };
+    }
+    // SM-2 更新：答对升级/拉长间隔，答错降级/缩短间隔并提前到期
+    function updateMastery(wordId, isCorrect) {
+      const map = loadMastery();
+      const m = map[String(wordId)] || defaultMastery(wordId);
+      const now = new Date();
+      const q = isCorrect ? 5 : 0; // 质量：答对 5 / 答错 0（失败）
+      if (q >= 3) {
+        m.review_count += 1;
+        m.correct_streak += 1;
+        m.wrong_streak = 0;
+        if (m.review_count === 1) m.interval_days = 1;
+        else if (m.review_count === 2) m.interval_days = 6;
+        else m.interval_days = Math.round(m.interval_days * m.ease);
+        m.ease = Math.min(3.0, m.ease + (0.1 - (5 - q) * (0.08 + (5 - q) * 0.02)));
+        m.level = Math.min(5, m.level + 1);
+      } else {
+        m.review_count = 0; // 重置重复计数，下次成功从 interval=1 起
+        m.correct_streak = 0;
+        m.wrong_streak += 1;
+        m.interval_days = 1; // 1 天后重来（错题本模式可即时再练）
+        m.ease = Math.max(1.3, m.ease - 0.2);
+        m.level = Math.max(0, m.level - 1);
+      }
+      m.last_reviewed = now.toISOString();
+      m.due_at = new Date(now.getTime() + m.interval_days * 86400000).toISOString();
+      map[String(wordId)] = m;
+      saveMasteryMap(map);
+      if (window.SupabaseSync && window.SupabaseSync.isOn()) {
+        window.SupabaseSync.pushMastery(m); // 异步同步云端（失败静默，已留本地）
+      }
+      return m;
+    }
+
+    // 今日复习队列：所有到期词（含新词），按紧急度升序，取前 REVIEW_LIMIT（叠加词库筛选）
+    function dueCount() {
+      let list = state.words.filter((w) => isDue(w.id));
+      if (state.levelFilter && state.levelFilter !== 'ALL') {
+        list = list.filter((w) => w.cet_level === state.levelFilter);
+      }
+      return list.length;
+    }
+    function buildDueQueue() {
+      let list = state.words.filter((w) => isDue(w.id));
+      if (state.levelFilter && state.levelFilter !== 'ALL') {
+        list = list.filter((w) => w.cet_level === state.levelFilter);
+      }
+      list.sort((a, b) => {
+        const da = getMastery(a.id), db = getMastery(b.id);
+        const ta = da ? new Date(da.due_at).getTime() : 0;
+        const tb = db ? new Date(db.due_at).getTime() : 0;
+        return ta - tb; // 越紧急（due_at 越早）越靠前
+      });
+      if (list.length > REVIEW_LIMIT) list = list.slice(0, REVIEW_LIMIT);
+      return list;
+    }
+
     // 加载词库（内嵌在 words.js 的 window.WORDS）
     function loadWords() {
       state.words = window.WORDS || [];
@@ -315,6 +413,24 @@
     }
 
     function beginSession(resume) {
+      // 今日复习模式：队列只取按遗忘曲线到期的词（可叠加词库筛选），不续接普通进度
+      if (state.reviewDue) {
+        const list = buildDueQueue();
+        if (list.length === 0) {
+          // 今天没有到期词（或当前筛选下无）：退出复习模式，回到普通模式
+          state.reviewDue = false;
+          updateReviewUI();
+        } else {
+          state.queue = list.map((w) => w.id).sort(() => Math.random() - 0.5);
+          state.index = 0;
+          state.correctCount = 0;
+          state.tryCount = 0;
+          state.optionCount = { A: 0, B: 0, C: 0, D: 0 };
+          clearSession();
+          renderQuestion();
+          return;
+        }
+      }
       // 复习错题模式：队列只取错题本中的词（可叠加词库筛选），不续接普通进度
       if (state.reviewWrong) {
         const list = buildWrongQueue();
@@ -372,6 +488,15 @@
 
       elWord.textContent = state.current.word;
       elPhonetic.textContent = state.current.phonetic;
+      // 掌握度提示（已学过才显示等级）
+      const mh = getMastery(state.current.id);
+      if (mh && mh.level > 0) {
+        elMasteryHint.textContent = `掌握度 Lv${mh.level} · 间隔 ${mh.interval_days} 天`;
+        elMasteryHint.classList.remove('hidden');
+      } else {
+        elMasteryHint.textContent = '';
+        elMasteryHint.classList.add('hidden');
+      }
 
       elProgress.textContent = `第 ${state.index + 1} / ${state.queue.length} 题`;
       elProgressTop.textContent = `第 ${state.index + 1} / ${state.queue.length} 词`;
@@ -644,6 +769,7 @@
       };
       saveAnswer(rec);                            // 本地即时写入（离线可用）
       if (!isCorrect) recordWrong(rec, state.current); // 答错/超时 → 记入错题本留存
+      updateMastery(state.current.id, isCorrect);  // SM-2 掌握度更新（无论对错都更新排期）
       if (window.SupabaseSync && window.SupabaseSync.isOn()) {
         window.SupabaseSync.pushAnswer(rec);       // 异步同步云端（失败静默，已留本地）
       }
@@ -672,19 +798,44 @@
       if (n > 0) { elWrongBadge.textContent = n; elWrongBadge.classList.remove('hidden'); }
       else { elWrongBadge.classList.add('hidden'); }
     }
-    // 复习模式提示条 + 按钮高亮态切换
+    // 复习模式提示条 + 按钮高亮态切换（同时处理错题本 / 今日复习两种模式）
     function updateReviewUI() {
       if (!elReviewWrong) return;
+      // 错题本按钮态
       if (state.reviewWrong) {
         elReviewWrong.classList.add('bg-rose-600', 'text-white', 'border-rose-600');
         elReviewWrong.classList.remove('bg-rose-50', 'text-rose-700', 'border-rose-200');
-        elReviewBanner.classList.remove('hidden');
-        elReviewBanner.textContent = `📕 复习模式：只刷错题本里的词（共 ${Object.keys(loadWrong()).length} 个）`;
       } else {
         elReviewWrong.classList.remove('bg-rose-600', 'text-white', 'border-rose-600');
         elReviewWrong.classList.add('bg-rose-50', 'text-rose-700', 'border-rose-200');
+      }
+      // 今日复习按钮态
+      if (elReviewDue) {
+        if (state.reviewDue) {
+          elReviewDue.classList.add('bg-amber-600', 'text-white', 'border-amber-600');
+          elReviewDue.classList.remove('bg-amber-50', 'text-amber-700', 'border-amber-200');
+        } else {
+          elReviewDue.classList.remove('bg-amber-600', 'text-white', 'border-amber-600');
+          elReviewDue.classList.add('bg-amber-50', 'text-amber-700', 'border-amber-200');
+        }
+      }
+      // 提示条
+      if (state.reviewDue) {
+        elReviewBanner.classList.remove('hidden');
+        elReviewBanner.textContent = '📅 复习调度：按遗忘曲线，本轮复习今天到期的词';
+      } else if (state.reviewWrong) {
+        elReviewBanner.classList.remove('hidden');
+        elReviewBanner.textContent = `📕 复习模式：只刷错题本里的词（共 ${Object.keys(loadWrong()).length} 个）`;
+      } else {
         elReviewBanner.classList.add('hidden');
       }
+    }
+    // 顶部「今日复习」计数徽标：今天到期词总数
+    function updateDueBadge() {
+      const n = dueCount();
+      if (!elDueBadge) return;
+      if (n > 0) { elDueBadge.textContent = n; elDueBadge.classList.remove('hidden'); }
+      else { elDueBadge.classList.add('hidden'); }
     }
     // 复习模式下作答后展示「已掌握，移出错题本」按钮
     function showMasterBtn() {
@@ -701,6 +852,16 @@
     if (elReviewWrong) {
       elReviewWrong.addEventListener('click', () => {
         state.reviewWrong = !state.reviewWrong;
+        state.reviewDue = false; // 两种复习模式互斥
+        updateReviewUI();
+        beginSession(false);
+      });
+    }
+    // 今日复习：切换按遗忘曲线排期的复习模式
+    if (elReviewDue) {
+      elReviewDue.addEventListener('click', () => {
+        state.reviewDue = !state.reviewDue;
+        state.reviewWrong = false; // 两种复习模式互斥
         updateReviewUI();
         beginSession(false);
       });
@@ -757,6 +918,7 @@
 
     // 初始化错题本：同步顶部计数徽标与复习模式 UI 状态
     updateWrongBadge();
+    updateDueBadge();
     updateReviewUI();
 
     loadWords();

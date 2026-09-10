@@ -106,5 +106,49 @@
       .catch((e) => { log('warn', '云端拉取失败，回退本地', e.message); return null; });
   }
 
-  window.SupabaseSync = { isOn, init, pushAnswer, pushMany, pullAnswers, deviceId };
+  // 掌握度 upsert（复习调度管家；按 word_id 唯一，云端合并）
+  function pushMastery(rec) {
+    const client = init();
+    if (!client) return Promise.resolve(false);
+    const row = {
+      word_id: rec.word_id,
+      level: rec.level,
+      ease: rec.ease,
+      interval_days: rec.interval_days,
+      due_at: rec.due_at,
+      last_reviewed: rec.last_reviewed || null,
+      review_count: rec.review_count || 0,
+      correct_streak: rec.correct_streak || 0,
+      wrong_streak: rec.wrong_streak || 0,
+      updated_at: new Date().toISOString(),
+      device: deviceId(),
+    };
+    return client.from('mastery').upsert(row, { onConflict: 'word_id' })
+      .then(() => { log('debug', '已同步掌握度', row.word_id); return true; })
+      .catch((e) => { log('warn', '云端写入掌握度失败（已留本地）', e.message); return false; });
+  }
+
+  // 拉取全部云端掌握度（返回 { word_id: {...} }）
+  function pullMastery() {
+    const client = init();
+    if (!client) return Promise.resolve(null);
+    return client.from('mastery').select('*')
+      .then((res) => {
+        if (res.error) throw res.error;
+        const out = {};
+        for (const r of (res.data || [])) {
+          out[r.word_id] = {
+            word_id: r.word_id, level: r.level, ease: r.ease,
+            interval_days: r.interval_days, due_at: r.due_at,
+            last_reviewed: r.last_reviewed, review_count: r.review_count,
+            correct_streak: r.correct_streak, wrong_streak: r.wrong_streak,
+          };
+        }
+        log('info', '从云端拉取掌握度', Object.keys(out).length);
+        return out;
+      })
+      .catch((e) => { log('warn', '云端拉取掌握度失败，回退本地', e.message); return null; });
+  }
+
+  window.SupabaseSync = { isOn, init, pushAnswer, pushMany, pullAnswers, pushMastery, pullMastery, deviceId };
 })();

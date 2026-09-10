@@ -34,3 +34,33 @@ create policy "anon_all_answers"
   to anon
   using (true)
   with check (true);
+
+-- 5) 掌握度表（复习调度管家 / SM-2 遗忘曲线）
+--    每词一行（word_id 唯一），记录掌握等级、间隔、下次到期时间
+create table if not exists public.mastery (
+  id             bigint generated always as identity primary key,
+  word_id        text        not null unique,        -- 对应 words.js 中 w.id（每词一行）
+  level          smallint    not null default 0,     -- 掌握等级 0~5（0 新词 / 5 精通）
+  ease           real        not null default 2.5,   -- SM-2 容易度因子
+  interval_days  integer     not null default 0,     -- 当前复习间隔（天）
+  due_at         timestamptz not null default now(), -- 下次到期复习时间
+  last_reviewed  timestamptz,                        -- 上次复习时间
+  review_count   integer     not null default 0,     -- 累计复习次数
+  correct_streak integer     not null default 0,     -- 连续答对
+  wrong_streak   integer     not null default 0,     -- 连续答错
+  updated_at     timestamptz default now(),
+  device         text                                   -- 最后修改设备（排查用）
+);
+
+create index if not exists idx_mastery_due on public.mastery (due_at);
+create index if not exists idx_mastery_level on public.mastery (level);
+
+alter table public.mastery enable row level security;
+
+drop policy if exists "anon_all_mastery" on public.mastery;
+create policy "anon_all_mastery"
+  on public.mastery
+  for all
+  to anon
+  using (true)
+  with check (true);
