@@ -60,6 +60,12 @@
       <!-- 词库筛选（按 cet_level：全部 / 雅思 / CET4 / CET6 / 考研 / 托福 / SAT） -->
       <select id="levelFilter" title="选择词库 / 难度"
         class="bg-white border border-neutral-200 text-neutral-700 rounded-full px-3 py-1.5 text-sm font-medium shadow-sm hover:bg-neutral-50 cursor-pointer"></select>
+      <!-- 复习错题：进入只刷错题本模式 -->
+      <button id="reviewWrongBtn" type="button" title="只刷错题本里留存的词"
+        class="flex-none inline-flex items-center gap-1.5 bg-rose-50 border border-rose-200 text-rose-700 rounded-full px-3.5 py-1.5 text-sm font-medium shadow-sm hover:bg-rose-100 active:scale-95 transition">
+        📕 复习错题
+        <span id="wrongCountBadge" class="hidden bg-rose-600 text-white rounded-full px-1.5 text-xs tabular-nums">0</span>
+      </button>
     </div>
 
     <!-- 右上角：进度徽标 + 倒计时圆环 -->
@@ -92,6 +98,9 @@
   <!-- ===================== 主区域 ===================== -->
   <main class="max-w-3xl mx-auto px-4 pt-8 pb-24">
 
+    <!-- 复习模式提示条 -->
+    <div id="reviewBanner" class="hidden mb-4 mx-auto w-fit text-center text-sm text-rose-700 bg-rose-50 border border-rose-200 rounded-full px-4 py-1.5">📕 复习模式：只刷错题本里的词</div>
+
     <!-- 单词展示 -->
     <section class="text-center">
       <h1 id="word" class="text-5xl sm:text-6xl font-extrabold tracking-tight text-neutral-900">--</h1>
@@ -114,10 +123,17 @@
       <div class="text-sm text-neutral-400">
         <span id="progress">第 1 / 1 题</span>
       </div>
-      <button id="nextBtn" disabled
-        class="hidden items-center gap-2 bg-neutral-900 text-white rounded-full px-8 py-3 text-base font-semibold shadow hover:bg-neutral-700 disabled:opacity-40 disabled:cursor-not-allowed">
+      <div class="flex items-center gap-3">
+        <!-- 复习模式下：答对/答错后可标记「已掌握」移出错题本 -->
+        <button id="masterBtn" type="button"
+          class="hidden items-center gap-2 bg-emerald-600 text-white rounded-full px-6 py-3 text-base font-semibold shadow hover:bg-emerald-700 active:scale-95 transition">
+          ✓ 已掌握，移出错题本
+        </button>
+        <button id="nextBtn" disabled
+          class="hidden items-center gap-2 bg-neutral-900 text-white rounded-full px-8 py-3 text-base font-semibold shadow hover:bg-neutral-700 disabled:opacity-40 disabled:cursor-not-allowed">
         下一题 <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
       </button>
+      </div>
     </div>
 
     <!-- 结束面板 -->
@@ -142,6 +158,7 @@
     const QUiZ_SECONDS = 12;            // 每题倒计时（秒）
     const OPTIONS = ['A', 'B', 'C', 'D'];
     const LS_KEY = 'ielts_answers_v1';  // 答题记录存储键
+    const WRONG_KEY = 'ielts_wrong_v1'; // 错题本（留存）存储键：答错/超时的词永久留存于此，供复习
     const SESSION_KEY = 'ielts_session_v1'; // 答题进度（续接）存储键
     const AUTO_SPEAK_KEY = 'ielts_auto_speak_v1'; // 自动发音开关偏好
 
@@ -157,6 +174,7 @@
       tryCount: 0,
       optionCount: { A: 0, B: 0, C: 0, D: 0 },
       levelFilter: 'ALL',
+      reviewWrong: false,   // 是否进入「复习错题」模式（仅刷错题本里的词）
       startTs: 0,
       timer: null,
     };
@@ -168,6 +186,10 @@
     const elCountdown = $('countdown'), elRing = $('ringProgress'), elFinished = $('finished');
     const elSpeakToggle = $('speakToggle'), elReplay = $('replayBtn'), elRootInfo = $('rootInfo');
     const elLevelFilter = $('levelFilter');
+    const elReviewWrong = $('reviewWrongBtn');
+    const elWrongBadge = $('wrongCountBadge');
+    const elReviewBanner = $('reviewBanner');
+    const elMasterBtn = $('masterBtn');
     const RING_CIRC = 2 * Math.PI * 24;
 
     // 自动发音开关（默认开启；记忆用户偏好）
@@ -191,6 +213,46 @@
       catch (e) { console.error('保存答题记录失败', e); }
     }
 
+    // ---------- 错题本（留存）----------
+    // 以 word_id 为键的对象：{ word_id, word, phonetic, correct_option,
+    //   last_wrong_option, wrong_count, first_ts, last_ts }
+    function loadWrong() {
+      try { return JSON.parse(localStorage.getItem(WRONG_KEY) || '{}'); }
+      catch (e) { return {}; }
+    }
+    function saveWrongMap(map) {
+      try { localStorage.setItem(WRONG_KEY, JSON.stringify(map)); }
+      catch (e) { console.error('保存错题本失败', e); }
+    }
+    // 每次答错或超时调用：把该词记入错题本并留存（累加错误次数 + 最近时间）
+    function recordWrong(rec, current) {
+      const map = loadWrong();
+      const id = current.id;
+      const now = new Date().toISOString();
+      const prev = map[id] || {
+        word_id: id, word: current.word, phonetic: current.phonetic,
+        correct_option: current.correct_option, last_wrong_option: rec.selected_option,
+        wrong_count: 0, first_ts: now, last_ts: now,
+      };
+      // 词库可能更新，刷新展示字段，确保留存信息始终准确
+      prev.word = current.word;
+      prev.phonetic = current.phonetic;
+      prev.correct_option = current.correct_option;
+      prev.last_wrong_option = rec.selected_option; // null 表示超时未作答
+      prev.wrong_count = (prev.wrong_count || 0) + 1;
+      prev.last_ts = now;
+      if (!prev.first_ts) prev.first_ts = now;
+      map[id] = prev;
+      saveWrongMap(map);
+      updateWrongBadge(); // 同步顶部错题计数徽标
+    }
+    // 从错题本移除（用户复习时主动标记「已掌握」）
+    function removeWrong(wordId) {
+      const map = loadWrong();
+      if (map[wordId]) { delete map[wordId]; saveWrongMap(map); }
+      updateWrongBadge();
+    }
+
     // 词库筛选：按 cet_level 过滤当前词表
     function getLevels() {
       const set = new Set((window.WORDS || []).map((w) => w.cet_level).filter(Boolean));
@@ -203,6 +265,16 @@
     function getFilteredWords() {
       if (!state.levelFilter || state.levelFilter === 'ALL') return state.words;
       return state.words.filter((w) => w.cet_level === state.levelFilter);
+    }
+
+    // 复习错题模式队列：仅取错题本中留存的词（可叠加词库筛选）
+    function buildWrongQueue() {
+      const wrong = loadWrong();
+      let list = state.words.filter((w) => wrong[String(w.id)]);
+      if (state.levelFilter && state.levelFilter !== 'ALL') {
+        list = list.filter((w) => w.cet_level === state.levelFilter);
+      }
+      return list;
     }
 
     // 加载词库（内嵌在 words.js 的 window.WORDS）
@@ -243,6 +315,24 @@
     }
 
     function beginSession(resume) {
+      // 复习错题模式：队列只取错题本中的词（可叠加词库筛选），不续接普通进度
+      if (state.reviewWrong) {
+        const list = buildWrongQueue();
+        if (list.length === 0) {
+          // 错题本已空（或当前筛选下无错题）：退出复习模式，回到普通模式
+          state.reviewWrong = false;
+          updateReviewUI();
+        } else {
+          state.queue = list.map((w) => w.id).sort(() => Math.random() - 0.5);
+          state.index = 0;
+          state.correctCount = 0;
+          state.tryCount = 0;
+          state.optionCount = { A: 0, B: 0, C: 0, D: 0 };
+          clearSession();
+          renderQuestion();
+          return;
+        }
+      }
       let saved = resume ? loadSession() : null;
       // 已保存进度的词库筛选与当前不一致 → 放弃续接，按当前筛选重建队列（避免错位）
       if (saved && saved.level === state.levelFilter) {
@@ -289,6 +379,7 @@
       elNext.classList.add('hidden');
       elNext.classList.remove('flex');
       elNext.disabled = true;
+      if (elMasterBtn) { elMasterBtn.classList.add('hidden'); elMasterBtn.classList.remove('flex'); }
       elFinished.classList.add('hidden');
       elRootInfo.classList.add('hidden'); // 进入新题先清除上一题词根词缀
 
@@ -371,6 +462,7 @@
       submitToLocal(null);
       renderFeedback();
       enableNext();
+      if (state.reviewWrong) showMasterBtn();
       showRootInfo(state.current.word); // 超时：同样展示词根词缀 / 词源
     }
 
@@ -393,9 +485,11 @@
       submitToLocal(letter);
       if (isRight) {
         // 答对：短暂展示绿色反馈后自动进入下一题（无需手动点“下一题”）
+        if (state.reviewWrong) showMasterBtn(); // 复习中答对也可标记「已掌握」
         setTimeout(onNext, 650);
       } else {
         enableNext();
+        if (state.reviewWrong) showMasterBtn();
         showRootInfo(state.current.word); // 答错：拉取并展示词根词缀 / 词源
       }
     }
@@ -549,6 +643,7 @@
         timestamp: new Date().toISOString(),
       };
       saveAnswer(rec);                            // 本地即时写入（离线可用）
+      if (!isCorrect) recordWrong(rec, state.current); // 答错/超时 → 记入错题本留存
       if (window.SupabaseSync && window.SupabaseSync.isOn()) {
         window.SupabaseSync.pushAnswer(rec);       // 异步同步云端（失败静默，已留本地）
       }
@@ -562,15 +657,61 @@
 
     function onNext() {
       clearInterval(state.timer);
+      if (elMasterBtn) { elMasterBtn.classList.add('hidden'); elMasterBtn.classList.remove('flex'); }
       const isLast = state.index >= state.queue.length - 1;
       if (isLast) { renderFinished(); return; }
       state.index += 1;
       renderQuestion();
     }
 
+    /* ---------- 错题本 UI 辅助 ---------- */
+    // 顶部错题计数徽标：有留存错题时显示个数，否则隐藏
+    function updateWrongBadge() {
+      const n = Object.keys(loadWrong()).length;
+      if (!elWrongBadge) return;
+      if (n > 0) { elWrongBadge.textContent = n; elWrongBadge.classList.remove('hidden'); }
+      else { elWrongBadge.classList.add('hidden'); }
+    }
+    // 复习模式提示条 + 按钮高亮态切换
+    function updateReviewUI() {
+      if (!elReviewWrong) return;
+      if (state.reviewWrong) {
+        elReviewWrong.classList.add('bg-rose-600', 'text-white', 'border-rose-600');
+        elReviewWrong.classList.remove('bg-rose-50', 'text-rose-700', 'border-rose-200');
+        elReviewBanner.classList.remove('hidden');
+        elReviewBanner.textContent = `📕 复习模式：只刷错题本里的词（共 ${Object.keys(loadWrong()).length} 个）`;
+      } else {
+        elReviewWrong.classList.remove('bg-rose-600', 'text-white', 'border-rose-600');
+        elReviewWrong.classList.add('bg-rose-50', 'text-rose-700', 'border-rose-200');
+        elReviewBanner.classList.add('hidden');
+      }
+    }
+    // 复习模式下作答后展示「已掌握，移出错题本」按钮
+    function showMasterBtn() {
+      if (!elMasterBtn) return;
+      elMasterBtn.classList.remove('hidden');
+      elMasterBtn.classList.add('flex');
+    }
+
     elNext.addEventListener('click', onNext);
     elReplay.addEventListener('click', () => { if (state.current) speakWord(state.current.word); });
     elSpeakToggle.addEventListener('click', onToggleSpeak);
+
+    // 复习错题：切换只刷错题本模式（可叠加词库筛选）
+    if (elReviewWrong) {
+      elReviewWrong.addEventListener('click', () => {
+        state.reviewWrong = !state.reviewWrong;
+        updateReviewUI();
+        beginSession(false);
+      });
+    }
+    // 已掌握：移出错题本并进入下一题
+    if (elMasterBtn) {
+      elMasterBtn.addEventListener('click', () => {
+        if (state.current) removeWrong(state.current.id);
+        onNext();
+      });
+    }
 
     /* ==========================================================================
      * 顶部实时时钟（北京时间）
@@ -613,6 +754,10 @@
         beginSession(false);
       });
     })();
+
+    // 初始化错题本：同步顶部计数徽标与复习模式 UI 状态
+    updateWrongBadge();
+    updateReviewUI();
 
     loadWords();
   </script>

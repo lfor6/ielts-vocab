@@ -57,6 +57,18 @@
       </div>
     </section>
 
+    <!-- 错题本（留存）：每次答错/超时的词自动留存于此，可逐条移除或整体清空 -->
+    <section class="mt-6 bg-white rounded-2xl p-5 border border-neutral-100 shadow-sm">
+      <div class="flex items-center justify-between flex-wrap gap-2">
+        <h2 class="text-base font-semibold text-neutral-700">
+          📕 错题本（留存）· <span id="wrongBookCount" class="text-rose-600">0</span> 个词
+        </h2>
+        <button onclick="clearWrongBook()" class="border border-red-200 text-red-500 rounded-lg px-4 py-1.5 text-sm hover:bg-red-50">清空错题本</button>
+      </div>
+      <div id="wrongBookList" class="mt-4 space-y-2"></div>
+      <p id="wrongBookEmpty" class="hidden mt-2 text-sm text-neutral-400">错题本为空：作答时答错或超时的词会自动留存到这里。</p>
+    </section>
+
     <!-- 各考频平均错误率柱状图 -->
     <section class="mt-8 bg-white rounded-2xl p-6 border border-neutral-100 shadow-sm">
       <h2 class="text-base font-semibold text-neutral-700">各考频区间平均错误率</h2>
@@ -121,6 +133,64 @@
     function loadAnswers() {
       try { return JSON.parse(localStorage.getItem(LS_KEY) || '[]'); }
       catch (e) { return []; }
+    }
+
+    /* ---------- 错题本（留存）本地读写 ---------- */
+    const WRONG_KEY = 'ielts_wrong_v1';
+    function escapeHtml(s) {
+      return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => (
+        { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+      ));
+    }
+    function loadWrong() {
+      try { return JSON.parse(localStorage.getItem(WRONG_KEY) || '{}'); }
+      catch (e) { return {}; }
+    }
+    function saveWrongMap(m) {
+      try { localStorage.setItem(WRONG_KEY, JSON.stringify(m)); } catch (e) { /* ignore */ }
+    }
+    // 渲染错题本清单（按最近错题时间倒序）
+    function renderWrongBook() {
+      const m = loadWrong();
+      const ids = Object.keys(m);
+      $('wrongBookCount').textContent = ids.length;
+      const list = $('wrongBookList');
+      const empty = $('wrongBookEmpty');
+      if (!ids.length) { list.innerHTML = ''; empty.classList.remove('hidden'); return; }
+      empty.classList.add('hidden');
+      const rows = ids.map((id) => m[id]).sort((a, b) => new Date(b.last_ts) - new Date(a.last_ts));
+      list.innerHTML = rows.map((r) => {
+        const w = WORD_MAP[r.word_id] || {};
+        const correctTxt = (w.options && w.options[r.correct_option]) || '';
+        const wrongTxt = (r.last_wrong_option && w.options && w.options[r.last_wrong_option])
+          ? w.options[r.last_wrong_option] : '超时未作答';
+        const level = escapeHtml(r.cet_level || (w.cet_level || ''));
+        const last = r.last_ts ? new Date(r.last_ts).toLocaleString('zh-CN') : '';
+        return `
+        <div class="flex items-center justify-between gap-3 rounded-xl border border-neutral-100 px-4 py-3">
+          <div class="flex-1 min-w-[200px]">
+            <div class="flex items-center gap-2 flex-wrap">
+              <span class="font-bold text-neutral-900">${escapeHtml(r.word)}</span>
+              <span class="text-neutral-400 text-sm">${escapeHtml(r.phonetic || '')}</span>
+              ${level ? `<span class="text-xs px-2 py-0.5 rounded-full bg-neutral-100 text-neutral-500">${level}</span>` : ''}
+            </div>
+            <div class="mt-1 text-sm text-neutral-500">正确：<span class="text-neutral-800">${escapeHtml(correctTxt)}</span>
+              ｜ 上次错选：<span class="text-rose-600">${escapeHtml(wrongTxt)}</span></div>
+            <div class="mt-0.5 text-xs text-neutral-400">错 ${r.wrong_count} 次 ｜ 最近：${last}</div>
+          </div>
+          <button onclick="removeWrong('${escapeHtml(r.word_id)}')"
+            class="flex-none border border-neutral-200 rounded-lg px-3 py-1.5 text-sm text-neutral-500 hover:bg-neutral-50">移出错题本</button>
+        </div>`;
+      }).join('');
+    }
+    function removeWrong(id) {
+      const m = loadWrong();
+      if (m[id]) { delete m[id]; saveWrongMap(m); renderWrongBook(); }
+    }
+    function clearWrongBook() {
+      if (!confirm('确认清空错题本？已留存的所有错题将被移除（不影响答题统计）。')) return;
+      localStorage.removeItem(WRONG_KEY);
+      renderWrongBook();
     }
 
     // 词库索引
@@ -391,6 +461,7 @@
     }
     initFilters();
 
+    renderWrongBook(); // 错题本（留存）清单
     loadStats();
   </script>
 </body>
