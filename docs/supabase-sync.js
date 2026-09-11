@@ -24,6 +24,15 @@
     return id;
   }
 
+  // 单次尝试唯一标识（云端 upsert 幂等：网络抖动重试不写重复行）
+  // 优先 crypto.randomUUID（HTTPS/localhost 安全上下文可用），降级到随机串
+  function uuid() {
+    try {
+      if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
+    } catch (e) { /* ignore */ }
+    return 'u_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 12);
+  }
+
   let _client = null;
   let _ready = false;
 
@@ -63,8 +72,9 @@
       response_time_ms: rec.response_time_ms || null,
       timestamp: rec.timestamp,
       device: deviceId(),
+      client_attempt_id: rec.client_attempt_id || uuid(),
     };
-    return client.from(cfg.TABLE).insert(row)
+    return client.from(cfg.TABLE).upsert(row, { onConflict: 'client_attempt_id' })
       .then(() => { log('debug', '已同步一条答题记录', row.word_id); return true; })
       .catch((e) => { log('warn', '云端写入失败（已保留本地）', e.message); return false; });
   }
@@ -80,8 +90,9 @@
       response_time_ms: r.response_time_ms || null,
       timestamp: r.timestamp,
       device: deviceId(),
+      client_attempt_id: r.client_attempt_id || uuid(),
     }));
-    return client.from(cfg.TABLE).insert(rows)
+    return client.from(cfg.TABLE).upsert(rows, { onConflict: 'client_attempt_id' })
       .then(() => { log('info', '批量同步完成', rows.length); return rows.length; })
       .catch((e) => { log('error', '批量同步失败', e.message); throw e; });
   }
