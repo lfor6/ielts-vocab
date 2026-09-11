@@ -90,7 +90,7 @@
   function pullAnswers() {
     const client = init();
     if (!client) return Promise.resolve(null); // null = 不可用，调用方回退本地
-    return client.from(cfg.TABLE).select('*')
+    return client.from(cfg.TABLE).select('*').limit(100000)
       .then((res) => {
         if (res.error) throw res.error;
         const out = (res.data || []).map((r) => ({
