@@ -122,6 +122,10 @@
           <span class="text-neutral-400">最高错误率 %</span>
           <input id="fMax" type="number" min="0" max="100" placeholder="100" class="w-24 border border-neutral-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-orange-200" />
         </label>
+        <label class="flex items-center gap-2 self-end text-sm text-neutral-700 cursor-pointer select-none">
+          <input id="fOnlyWrong" type="checkbox" checked class="w-4 h-4 rounded border-neutral-300 text-neutral-900 focus:ring-orange-200" />
+          仅显示错误词汇
+        </label>
         <button onclick="applyFilter()" class="bg-neutral-900 text-white rounded-lg px-5 py-2 text-sm font-medium hover:bg-neutral-700">筛选</button>
         <button onclick="resetFilter()" class="border border-neutral-200 rounded-lg px-5 py-2 text-sm text-neutral-500 hover:bg-neutral-50">重置</button>
         <button onclick="clearAll()" class="border border-red-200 text-red-500 rounded-lg px-5 py-2 text-sm hover:bg-red-50">清空记录</button>
@@ -484,16 +488,27 @@
 
     /* ---------- 读取并渲染 ---------- */
     let chartLoaded = false;
-    function setSyncStatus(source) {
+    function setSyncStatus(source, note) {
       const el = $('syncStatus');
       if (!el) return;
-      if (source === '云端') {
-        el.textContent = '数据来源：☁ 云端';
-        el.className = 'ml-auto text-sm text-emerald-600 font-medium';
-      } else {
-        el.textContent = '数据来源：💾 本地';
-        el.className = 'ml-auto text-sm text-neutral-400';
-      }
+      const prefix = source === '云端' ? '数据来源：☁ 云端' : '数据来源：💾 本地';
+      el.textContent = note ? `${prefix}（${note}）` : prefix;
+      el.className = 'ml-auto text-sm ' + (source === '云端' ? 'text-emerald-600 font-medium' : 'text-neutral-400');
+    }
+
+    // 合并云端 + 本地答题记录（按 word_id+timestamp 去重），取最完整集合，避免云端漏同步导致统计偏少
+    function mergeAnswers(cloud, local) {
+      const seen = new Set();
+      const out = [];
+      const add = (a) => {
+        if (!a) return;
+        const k = (a.word_id == null ? '' : a.word_id) + '|' + (a.timestamp || '');
+        if (seen.has(k)) return;
+        seen.add(k); out.push(a);
+      };
+      (cloud || []).forEach(add);
+      (local || []).forEach(add);
+      return out;
     }
 
     async function loadStats() {
@@ -502,25 +517,34 @@
         cet_level: $('fLevel').value,
         min_err: $('fMin').value || '',
         max_err: $('fMax').value || '',
+        onlyWrong: $('fOnlyWrong') ? $('fOnlyWrong').checked : false,
       };
-      // 数据源：优先云端（跨设备一致），拉取失败则回退本地（离线可用）
+      // 数据源：优先云端，但「合并」本地答题记录，避免云端漏同步导致统计偏少（按 word_id+timestamp 去重）
+      const local = loadAnswers();
       let answers = null;
       let source = '本地';
+      let cloudCount = 0, localCount = local.length;
       if (window.SupabaseSync && window.SupabaseSync.isOn()) {
-        answers = await window.SupabaseSync.pullAnswers();
+        const cloud = await window.SupabaseSync.pullAnswers();
+        if (cloud && cloud.length) {
+          cloudCount = cloud.length;
+          answers = mergeAnswers(cloud, local);
+          source = '云端';
+        }
       }
-      if (answers === null) {
-        answers = loadAnswers();
-      } else {
-        source = '云端';
-        // 云端拉到后顺手写回本地，作为离线缓存
-        try { localStorage.setItem(LS_KEY, JSON.stringify(answers)); } catch (e) { /* ignore */ }
-      }
-      setSyncStatus(source);
+      if (answers === null) answers = local;
+      const mergeNote = (source === '云端' && localCount)
+        ? `云端 ${cloudCount} + 本地 ${localCount} → 合并 ${answers.length}`
+        : `本地 ${localCount}`;
+      setSyncStatus(source, mergeNote);
+      // 合并后写回本地，作为离线缓存（最完整集合）
+      try { localStorage.setItem(LS_KEY, JSON.stringify(answers)); } catch (e) { /* ignore */ }
 
       const rows = computeStats(filters, answers);
-      renderList(rows);
-      $('summary').textContent = `共 ${rows.length} 条`;
+      // 「仅显示错误词汇」只影响下方词条列表；右上概览与考频柱状图仍基于全部答题统计
+      const display = filters.onlyWrong ? rows.filter((r) => r.wrong_count > 0) : rows;
+      renderList(display);
+      $('summary').textContent = filters.onlyWrong ? `共 ${display.length} 条（仅错误词汇）` : `共 ${display.length} 条`;
 
       // 概览：错误总个数等（随筛选实时更新）
       const totalAttempts = rows.reduce((s, r) => s + r.total_attempts, 0);
@@ -560,6 +584,7 @@
     function resetFilter() {
       $('fFreq').value = ''; $('fLevel').value = '';
       $('fMin').value = ''; $('fMax').value = '';
+      if ($('fOnlyWrong')) $('fOnlyWrong').checked = true;
       loadStats();
     }
     function clearAll() {
@@ -569,7 +594,7 @@
       loadStats();
     }
 
-    ['fFreq', 'fLevel', 'fMin', 'fMax'].forEach((id) => {
+    ['fFreq', 'fLevel', 'fMin', 'fMax', 'fOnlyWrong'].forEach((id) => {
       $(id).addEventListener('change', applyFilter);
     });
 
