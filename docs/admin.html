@@ -91,6 +91,10 @@
       </div>
       <div id="wrongBookList" class="mt-4 space-y-2"></div>
       <p id="wrongBookEmpty" class="hidden mt-2 text-sm text-neutral-400">错题本为空：作答时答错或超时的词会自动留存到这里。</p>
+      <button id="importWrongBtn" onclick="importWrongFromAnswers()"
+        class="hidden mt-3 inline-flex items-center gap-1.5 border border-amber-300 text-amber-700 bg-amber-50 rounded-lg px-4 py-1.5 text-sm font-medium hover:bg-amber-100">
+        从历史答题记录导入错题
+      </button>
     </section>
 
     <!-- 各考频平均错误率柱状图 -->
@@ -174,21 +178,44 @@
     function saveWrongMap(m) {
       try { localStorage.setItem(WRONG_KEY, JSON.stringify(m)); } catch (e) { /* ignore */ }
     }
-    // 渲染错题本清单（按最近错题时间倒序）
-    function renderWrongBook() {
-      const m = loadWrong();
-      const ids = Object.keys(m);
+    // 渲染错题本清单（合并本地 + 云端，按最近错题时间倒序）
+    async function renderWrongBook() {
+      const local = loadWrong();
+      let merged = Object.assign({}, local);
+      // 优先拉云端；相同 word_id 取 last_ts 较新的一方
+      if (window.SupabaseSync && window.SupabaseSync.isOn()) {
+        try {
+          const cloud = await window.SupabaseSync.pullWrong();
+          if (cloud) {
+            for (const id in cloud) {
+              const c = cloud[id];
+              const l = local[id];
+              if (!l || new Date(c.last_ts) >= new Date(l.last_ts)) merged[id] = c;
+              else merged[id] = l;
+            }
+          }
+        } catch (e) { /* 云端失败已回退本地，忽略 */ }
+      }
+      const ids = Object.keys(merged);
       $('wrongBookCount').textContent = ids.length;
       const list = $('wrongBookList');
       const empty = $('wrongBookEmpty');
-      if (!ids.length) { list.innerHTML = ''; empty.classList.remove('hidden'); return; }
+      const importBtn = $('importWrongBtn');
+      if (!ids.length) {
+        list.innerHTML = '';
+        empty.classList.remove('hidden');
+        if (importBtn) importBtn.classList.remove('hidden'); // 错题本空但有历史答题时提示可回溯
+        return;
+      }
       empty.classList.add('hidden');
-      const rows = ids.map((id) => m[id]).sort((a, b) => new Date(b.last_ts) - new Date(a.last_ts));
+      if (importBtn) importBtn.classList.add('hidden');
+      const rows = ids.map((id) => merged[id]).sort((a, b) => new Date(b.last_ts) - new Date(a.last_ts));
       list.innerHTML = rows.map((r) => {
         const w = WORD_MAP[r.word_id] || {};
-        const correctTxt = (w.options && w.options[r.correct_option]) || '';
+        const correctTxt = (w.options && w.options[r.correct_option]) || (r.correct_option || '');
         const wrongTxt = (r.last_wrong_option && w.options && w.options[r.last_wrong_option])
-          ? w.options[r.last_wrong_option] : '超时未作答';
+          ? w.options[r.last_wrong_option]
+          : ((r.last_wrong_option && r.last_wrong_option !== 'null') ? r.last_wrong_option : '超时未作答');
         const level = escapeHtml(r.cet_level || (w.cet_level || ''));
         const last = r.last_ts ? new Date(r.last_ts).toLocaleString('zh-CN') : '';
         return `
@@ -210,12 +237,53 @@
     }
     function removeWrong(id) {
       const m = loadWrong();
-      if (m[id]) { delete m[id]; saveWrongMap(m); renderWrongBook(); }
+      if (m[id]) { delete m[id]; saveWrongMap(m); }
+      if (window.SupabaseSync && window.SupabaseSync.isOn()) window.SupabaseSync.deleteWrong(id);
+      renderWrongBook();
     }
     function clearWrongBook() {
       if (!confirm('确认清空错题本？已留存的所有错题将被移除（不影响答题统计）。')) return;
+      const m = loadWrong();
+      if (window.SupabaseSync && window.SupabaseSync.isOn()) {
+        for (const id in m) window.SupabaseSync.deleteWrong(id);
+      }
       localStorage.removeItem(WRONG_KEY);
       renderWrongBook();
+    }
+    // 从历史答题记录（云端 answers 优先，回退本地）回溯错题本：把答错过的词一次性导入
+    async function importWrongFromAnswers() {
+      let answers = null;
+      if (window.SupabaseSync && window.SupabaseSync.isOn()) answers = await window.SupabaseSync.pullAnswers();
+      if (!answers || !answers.length) answers = loadAnswers();
+      if (!answers || !answers.length) { alert('没有可回溯的答题记录'); return; }
+      const agg = {};
+      for (const a of answers) {
+        if (a.is_correct) continue;
+        const id = String(a.word_id);
+        if (!agg[id]) agg[id] = { count: 0, lastOpt: null, lastTs: '' };
+        agg[id].count += 1;
+        agg[id].lastOpt = a.selected_option;
+        if (!agg[id].lastTs || a.timestamp > agg[id].lastTs) agg[id].lastTs = a.timestamp;
+      }
+      const m = loadWrong();
+      let added = 0;
+      for (const id in agg) {
+        if (m[id]) continue; // 已留存不覆盖
+        const w = WORD_MAP[id] || {};
+        m[id] = {
+          word_id: id, word: w.word || id, phonetic: w.phonetic || '',
+          correct_option: w.correct_option || '', cet_level: w.cet_level || '',
+          last_wrong_option: agg[id].lastOpt, wrong_count: agg[id].count,
+          first_ts: agg[id].lastTs, last_ts: agg[id].lastTs,
+        };
+        added += 1;
+      }
+      saveWrongMap(m);
+      if (window.SupabaseSync && window.SupabaseSync.isOn()) {
+        for (const id in m) window.SupabaseSync.pushWrong(m[id]);
+      }
+      renderWrongBook();
+      alert(`已从历史答题记录导入 ${added} 个错题到错题本`);
     }
 
     // 掌握度（SM-2）本地读写

@@ -150,5 +150,59 @@
       .catch((e) => { log('warn', '云端拉取掌握度失败，回退本地', e.message); return null; });
   }
 
-  window.SupabaseSync = { isOn, init, pushAnswer, pushMany, pullAnswers, pushMastery, pullMastery, deviceId };
+  // 错题本 upsert（按 word_id 唯一，云端合并；答题页 recordWrong 调用）
+  function pushWrong(entry) {
+    const client = init();
+    if (!client || !entry) return Promise.resolve(false);
+    const row = {
+      word_id: String(entry.word_id),
+      word: entry.word || '',
+      phonetic: entry.phonetic || '',
+      correct_option: entry.correct_option || '',
+      cet_level: entry.cet_level || '',
+      last_wrong_option: (entry.last_wrong_option === null || entry.last_wrong_option === undefined)
+        ? null : String(entry.last_wrong_option),
+      wrong_count: entry.wrong_count || 1,
+      first_ts: entry.first_ts || new Date().toISOString(),
+      last_ts: entry.last_ts || new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      device: deviceId(),
+    };
+    return client.from('wrong_book').upsert(row, { onConflict: 'word_id' })
+      .then(() => { log('debug', '已同步错题本', row.word_id); return true; })
+      .catch((e) => { log('warn', '云端写入错题本失败（已留本地）', e.message); return false; });
+  }
+
+  // 拉取全部云端错题本（返回 { word_id: {...} }）
+  function pullWrong() {
+    const client = init();
+    if (!client) return Promise.resolve(null);
+    return client.from('wrong_book').select('*')
+      .then((res) => {
+        if (res.error) throw res.error;
+        const out = {};
+        for (const r of (res.data || [])) {
+          out[r.word_id] = {
+            word_id: r.word_id, word: r.word, phonetic: r.phonetic,
+            correct_option: r.correct_option, cet_level: r.cet_level,
+            last_wrong_option: r.last_wrong_option, wrong_count: r.wrong_count,
+            first_ts: r.first_ts, last_ts: r.last_ts,
+          };
+        }
+        log('info', '从云端拉取错题本', Object.keys(out).length);
+        return out;
+      })
+      .catch((e) => { log('warn', '云端拉取错题本失败，回退本地', e.message); return null; });
+  }
+
+  // 删除云端某条错题（管理端/答题页「移出」调用）
+  function deleteWrong(wordId) {
+    const client = init();
+    if (!client) return Promise.resolve(false);
+    return client.from('wrong_book').delete().eq('word_id', String(wordId))
+      .then(() => { log('debug', '已删除云端错题', wordId); return true; })
+      .catch((e) => { log('warn', '云端删除错题失败', e.message); return false; });
+  }
+
+  window.SupabaseSync = { isOn, init, pushAnswer, pushMany, pullAnswers, pushMastery, pullMastery, pushWrong, pullWrong, deleteWrong, deviceId };
 })();

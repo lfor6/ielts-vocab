@@ -64,3 +64,33 @@ create policy "anon_all_mastery"
   to anon
   using (true)
   with check (true);
+
+-- 6) 错题本表（留存答错/超时的词，跨设备同步；与 wrong_book 云端同步逻辑一致）
+--    每词一行（word_id 唯一），冗余存储展示字段，避免管理端只依赖词库
+create table if not exists public.wrong_book (
+  id                bigint generated always as identity primary key,
+  word_id           text        not null unique,        -- 对应 words.js 中 w.id（每词一行）
+  word              text        not null,               -- 冗余存词面（展示用）
+  phonetic          text,                                -- 音标
+  correct_option    text,                                -- 正确选项 A/B/C/D
+  cet_level         text,                                -- 等级（展示用）
+  last_wrong_option text,                                -- 上次错选；null/空 表示超时未作答
+  wrong_count       integer     not null default 1,     -- 累计错次
+  first_ts          timestamptz not null,                -- 首次进入错题本时间
+  last_ts           timestamptz not null,                -- 最近错题时间
+  updated_at        timestamptz default now(),
+  device            text                                   -- 最后修改设备（排查用）
+);
+
+create index if not exists idx_wrong_book_last on public.wrong_book (last_ts desc);
+create index if not exists idx_wrong_book_level on public.wrong_book (cet_level);
+
+alter table public.wrong_book enable row level security;
+
+drop policy if exists "anon_all_wrong_book" on public.wrong_book;
+create policy "anon_all_wrong_book"
+  on public.wrong_book
+  for all
+  to anon
+  using (true)
+  with check (true);

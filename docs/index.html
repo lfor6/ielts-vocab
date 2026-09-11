@@ -259,12 +259,18 @@
       map[id] = prev;
       saveWrongMap(map);
       updateWrongBadge(); // 同步顶部错题计数徽标
+      if (window.SupabaseSync && window.SupabaseSync.isOn()) {
+        window.SupabaseSync.pushWrong(prev); // 异步同步云端错题本（失败静默，已留本地）
+      }
     }
     // 从错题本移除（用户复习时主动标记「已掌握」）
     function removeWrong(wordId) {
       const map = loadWrong();
       if (map[wordId]) { delete map[wordId]; saveWrongMap(map); }
       updateWrongBadge();
+      if (window.SupabaseSync && window.SupabaseSync.isOn()) {
+        window.SupabaseSync.deleteWrong(wordId); // 同步删除云端错题本
+      }
     }
 
     // 词库筛选：按 cet_level 过滤当前词表
