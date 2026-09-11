@@ -327,18 +327,24 @@
 
     /* ---------- 各考频柱状图 ---------- */
     function computeFreqChart(answers) {
-      const agg = {}; // freq -> {total, wrong}
+      const agg = {}; // 实际出现的频率标签 -> {total, wrong}
       for (const a of answers) {
         const w = WORD_MAP[a.word_id];
         if (!w) continue;
-        const f = w.frequency_tag;
+        const f = w.frequency_tag || '未分级'; // 空标签归为「未分级」（新版词库多数词无考频）
         if (!agg[f]) agg[f] = { total: 0, wrong: 0 };
         agg[f].total += 1;
         if (a.is_correct !== 1) agg[f].wrong += 1;
       }
-      const order = ['高频', '中频', '低频'];
+      // 固定顺序优先：高频 > 中频 > 低频 > 未分级，其余实际出现的标签随后
+      const fixed = ['高频', '中频', '低频', '未分级'];
+      const present = Object.keys(agg);
+      const order = [];
+      for (const f of fixed) if (present.includes(f)) order.push(f);
+      for (const f of present) if (!fixed.includes(f)) order.push(f);
+      if (order.length === 0) return [];
       return order.map((f) => {
-        const d = agg[f] || { total: 0, wrong: 0 };
+        const d = agg[f];
         return {
           frequency_tag: f,
           total_attempts: d.total,
@@ -354,7 +360,8 @@
       const maxRate = Math.max(100, ...data.map((d) => d.avg_error_rate));
       const html = data.map((d) => {
         const h = Math.round((d.avg_error_rate / maxRate) * MAX_H);
-        const color = d.frequency_tag === '高频' ? '#c0392b' : d.frequency_tag === '中频' ? '#d99a4e' : '#6b7280';
+        const colorMap = { '高频': '#c0392b', '中频': '#d99a4e', '低频': '#6b7280', '未分级': '#2563eb' };
+        const color = colorMap[d.frequency_tag] || '#6b7280';
         return `
           <div class="flex flex-col items-center justify-end h-full w-1/4">
             <div class="text-sm font-semibold tabular-nums mb-2">${d.avg_error_rate}%</div>
